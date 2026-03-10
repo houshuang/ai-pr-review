@@ -41,9 +41,9 @@ The reviewer MUST see every line of changed code. This is non-negotiable — thi
 - [DONE] Grouped by file within sections (no duplicate file diffs)
 - [DONE] Collapsible file diffs
 - [DONE] Hunk-level diff filtering — show only relevant line ranges per hunk with "show all" toggle
-- Expand context up/down (fetch full file from GitHub API, merge extra lines)
+- [DONE] Expand context up/down (fetch full file from GitHub API, merge extra lines)
 - Line-level annotations from the AI (not just file-level)
-- Click on function/type names to jump to definition (would need tree-sitter or LSP)
+- [DONE] Click on function/type names to jump to definition (regex-based search across diff, Ctrl/Cmd+click)
 - Minimap within large diffs showing where the important changes are
 
 ## Review Tracking

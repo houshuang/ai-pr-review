@@ -21,11 +21,22 @@ function ghApiProxy() {
             const { method, endpoint, data } = JSON.parse(body);
             const httpMethod = (method || 'GET').toUpperCase();
 
-            const safeEndpoint = endpoint.replace(/'/g, "'\\''");
+            // For GET requests, append data fields as query parameters in the URL
+            // For other methods, pass as -f body fields
+            let apiEndpoint = endpoint;
+            if (httpMethod === 'GET' && data && typeof data === 'object') {
+              const params = new URLSearchParams();
+              for (const [key, value] of Object.entries(data)) {
+                params.append(key, String(value));
+              }
+              const sep = apiEndpoint.includes('?') ? '&' : '?';
+              apiEndpoint += sep + params.toString();
+            }
+
+            const safeEndpoint = apiEndpoint.replace(/'/g, "'\\''");
             let cmd = `gh api '${safeEndpoint}' --method ${httpMethod}`;
 
-            // Add request body fields
-            if (data && typeof data === 'object') {
+            if (httpMethod !== 'GET' && data && typeof data === 'object') {
               for (const [key, value] of Object.entries(data)) {
                 const escaped = String(value).replace(/'/g, "'\\''");
                 cmd += ` -f ${key}='${escaped}'`;
