@@ -12,12 +12,28 @@ let collapsedHunks = new Set(); // file-level collapse within sections
 let pendingComments = []; // { path, line, side, body } — queued for review submission
 let showComments = true;
 let showFullFile = new Set(); // hunkKeys where user wants to see full file instead of filtered
+let fileContentCache = new Map(); // path -> string[] (file lines, for expanding context)
+let viewMode = localStorage.getItem("review-tool-view") || "editorial";
+let darkMode = localStorage.getItem("review-tool-dark") === "true";
+let currentSectionIndex = 0; // for focus-stepper view
+
+let autoCollapseApplied = false; // track whether auto-collapse has been applied for this data
 
 function loadReviewState() {
   try {
     const key = `review-${data?.meta?.url || data?.meta?.title || "local"}`;
     const saved = localStorage.getItem(key);
     if (saved) reviewState = JSON.parse(saved);
+
+    // QW10: Restore collapsed state from localStorage
+    const collapseKey = `${key}:collapsed`;
+    const savedCollapse = localStorage.getItem(collapseKey);
+    if (savedCollapse) {
+      const parsed = JSON.parse(savedCollapse);
+      collapsedSections = new Set(parsed.sections || []);
+      collapsedHunks = new Set(parsed.hunks || []);
+      autoCollapseApplied = true; // user has saved state, skip auto-collapse
+    }
   } catch {
     /* ignore */
   }
@@ -27,8 +43,45 @@ function saveReviewState() {
   try {
     const key = `review-${data?.meta?.url || data?.meta?.title || "local"}`;
     localStorage.setItem(key, JSON.stringify(reviewState));
+
+    // QW10: Save collapsed state
+    const collapseKey = `${key}:collapsed`;
+    localStorage.setItem(collapseKey, JSON.stringify({
+      sections: [...collapsedSections],
+      hunks: [...collapsedHunks],
+    }));
   } catch {
     /* ignore */
+  }
+}
+
+// QW2: Auto-collapse supporting and context hunks on first load
+function applyAutoCollapse() {
+  if (autoCollapseApplied || !data?.walkthrough?.sections) return;
+  autoCollapseApplied = true;
+
+  for (const section of data.walkthrough.sections) {
+    if (!section.hunks?.length) continue;
+
+    // Group hunks by file (same logic as renderGroupedHunks)
+    const fileGroups = new Map();
+    for (const hunk of section.hunks) {
+      if (!fileGroups.has(hunk.file)) fileGroups.set(hunk.file, []);
+      fileGroups.get(hunk.file).push(hunk);
+    }
+
+    for (const [filePath, fileHunks] of fileGroups) {
+      const importanceOrder = { critical: 0, important: 1, supporting: 2, context: 3 };
+      const topImportance = fileHunks.reduce((best, h) => {
+        const hImp = h.importance || "important";
+        return (importanceOrder[hImp] || 2) < (importanceOrder[best] || 2) ? hImp : best;
+      }, fileHunks[0].importance || "important");
+
+      // Auto-collapse supporting and context hunks
+      if (topImportance === "supporting" || topImportance === "context") {
+        collapsedHunks.add(`${section.id}:${filePath}`);
+      }
+    }
   }
 }
 
@@ -101,6 +154,283 @@ function filterFileToRanges(file, ranges) {
     addedLines: filtered.reduce((n, b) => n + b.lines.filter((l) => l.type === "insert").length, 0),
     deletedLines: filtered.reduce((n, b) => n + b.lines.filter((l) => l.type === "delete").length, 0),
   };
+}
+
+// ─── File Content (for expanding context) ────────────
+async function fetchFileContent(filePath) {
+  if (fileContentCache.has(filePath)) return fileContentCache.get(filePath);
+  if (!isGitHubPR()) return null;
+  const { owner, repo, headBranch } = data.meta;
+  try {
+    const result = await ghApi("GET", `repos/${owner}/${repo}/contents/${filePath}`, { ref: headBranch });
+    const base64 = (result.content || "").replace(/\n/g, "");
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    const content = new TextDecoder().decode(bytes);
+    const lines = content.split("\n");
+    fileContentCache.set(filePath, lines);
+    return lines;
+  } catch (err) {
+    console.warn("Failed to fetch file content:", filePath, err);
+    return null;
+  }
+}
+
+function getBlockEndLines(block) {
+  let lastNew = block.newStartLine;
+  let lastOld = block.oldStartLine;
+  for (const line of block.lines) {
+    if (line.newNumber) lastNew = Math.max(lastNew, line.newNumber);
+    if (line.oldNumber) lastOld = Math.max(lastOld, line.oldNumber);
+  }
+  return { lastNew, lastOld };
+}
+
+async function expandContext(filePath, direction, blockNewStart) {
+  const file = findFile(filePath);
+  if (!file) return;
+
+  const fileLines = await fetchFileContent(filePath);
+  if (!fileLines) return;
+
+  const EXPAND_COUNT = 20;
+
+  if (direction === "up") {
+    const block = file.blocks.find((b) => b.newStartLine === blockNewStart) || file.blocks[0];
+    if (!block || block.newStartLine <= 1) return;
+
+    const blockIdx = file.blocks.indexOf(block);
+    let minNew = 1;
+    if (blockIdx > 0) {
+      const { lastNew } = getBlockEndLines(file.blocks[blockIdx - 1]);
+      minNew = lastNew + 1;
+    }
+    const expandFrom = Math.max(minNew, block.newStartLine - EXPAND_COUNT);
+    if (expandFrom >= block.newStartLine) return;
+
+    const oldOffset = block.oldStartLine - block.newStartLine;
+    const newLines = [];
+    for (let i = expandFrom; i < block.newStartLine; i++) {
+      newLines.push({
+        type: "context",
+        content: " " + (fileLines[i - 1] ?? ""),
+        oldNumber: i + oldOffset > 0 ? i + oldOffset : null,
+        newNumber: i,
+      });
+    }
+    block.lines = [...newLines, ...block.lines];
+    block.newStartLine = expandFrom;
+    block.oldStartLine = expandFrom + oldOffset > 0 ? expandFrom + oldOffset : 1;
+  } else if (direction === "down") {
+    const lastBlock = file.blocks[file.blocks.length - 1];
+    if (!lastBlock) return;
+    const block = blockNewStart
+      ? file.blocks.find((b) => b.newStartLine === blockNewStart) || lastBlock
+      : lastBlock;
+
+    const { lastNew, lastOld } = getBlockEndLines(block);
+    const blockIdx = file.blocks.indexOf(block);
+    let maxNew = fileLines.length;
+    if (blockIdx < file.blocks.length - 1) {
+      maxNew = file.blocks[blockIdx + 1].newStartLine - 1;
+    }
+    const expandTo = Math.min(maxNew, lastNew + EXPAND_COUNT);
+    if (expandTo <= lastNew) return;
+
+    const oldOffset = lastOld - lastNew;
+    for (let i = lastNew + 1; i <= expandTo; i++) {
+      block.lines.push({
+        type: "context",
+        content: " " + (fileLines[i - 1] ?? ""),
+        oldNumber: i + oldOffset,
+        newNumber: i,
+      });
+    }
+  } else if (direction === "between") {
+    const blockIdx = file.blocks.findIndex((b) => b.newStartLine === blockNewStart);
+    if (blockIdx <= 0) return;
+
+    const prevBlock = file.blocks[blockIdx - 1];
+    const nextBlock = file.blocks[blockIdx];
+    const { lastNew: prevEndNew, lastOld: prevEndOld } = getBlockEndLines(prevBlock);
+
+    const gapStart = prevEndNew + 1;
+    const gapEnd = nextBlock.newStartLine - 1;
+    if (gapStart > gapEnd) return;
+
+    const oldOffset = prevEndOld - prevEndNew;
+    for (let i = gapStart; i <= gapEnd; i++) {
+      prevBlock.lines.push({
+        type: "context",
+        content: " " + (fileLines[i - 1] ?? ""),
+        oldNumber: i + oldOffset,
+        newNumber: i,
+      });
+    }
+    prevBlock.lines.push(...nextBlock.lines);
+    file.blocks.splice(blockIdx, 1);
+  }
+
+  render();
+}
+
+// ─── Jump to Definition ──────────────────────────────
+function findDefinitionsInDiff(identifier) {
+  if (!identifier || identifier.length < 2) return [];
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const defPattern = new RegExp(
+    `(?:function\\*?|class|const|let|var|type|interface|enum|export\\s+(?:default\\s+)?(?:function\\*?|class|const|let|var|type|interface|enum)|def|fn|func)\\s+${escaped}\\b`
+  );
+
+  const results = [];
+  for (const [filePath, file] of Object.entries(parsedFiles)) {
+    for (const block of file.blocks) {
+      for (const line of block.lines) {
+        if (line.type === "delete") continue;
+        if (defPattern.test(line.content)) {
+          results.push({ filePath, line: line.newNumber || line.oldNumber, content: line.content });
+        }
+      }
+    }
+  }
+  return results;
+}
+
+function getWordAtPoint(event) {
+  const range = document.caretRangeFromPoint
+    ? document.caretRangeFromPoint(event.clientX, event.clientY)
+    : null;
+  if (!range) return null;
+  const text = range.startContainer.textContent || "";
+  const offset = range.startOffset;
+  const wordRe = /[a-zA-Z_$][a-zA-Z0-9_$]*/g;
+  let match;
+  while ((match = wordRe.exec(text)) !== null) {
+    if (match.index <= offset && offset <= match.index + match[0].length) {
+      return match[0];
+    }
+  }
+  return null;
+}
+
+function navigateToDefinition(result) {
+  const { filePath, line: lineNum } = result;
+  const targetFile = findFile(filePath);
+
+  for (const section of data?.walkthrough?.sections || []) {
+    const hunk = (section.hunks || []).find((h) => findFile(h.file) === targetFile);
+    if (hunk) {
+      collapsedSections.delete(section.id);
+      const hunkKey = `${section.id}:${hunk.file}`;
+      collapsedHunks.delete(hunkKey);
+      render();
+      requestAnimationFrame(() => highlightLineInDiff(lineNum));
+      return;
+    }
+  }
+
+  // Check remaining changes
+  collapsedSections.delete("__remaining");
+  const actualPath = Object.keys(parsedFiles).find((k) => parsedFiles[k] === targetFile);
+  if (actualPath) {
+    const fileKey = `__remaining:file:${actualPath}`;
+    collapsedHunks.add(fileKey);
+    render();
+    requestAnimationFrame(() => highlightLineInDiff(lineNum));
+  }
+}
+
+function highlightLineInDiff(lineNum) {
+  if (!lineNum) return;
+  const cells = document.querySelectorAll(".d2h-code-side-linenumber, .d2h-code-linenumber");
+  for (const cell of cells) {
+    if (cell.textContent.trim() === String(lineNum)) {
+      const row = cell.closest("tr");
+      if (row) {
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+        row.classList.add("jump-highlight");
+        setTimeout(() => row.classList.remove("jump-highlight"), 2500);
+        return;
+      }
+    }
+  }
+}
+
+function showJumpPopup(results, x, y) {
+  document.querySelector(".jump-popup")?.remove();
+  if (!results.length) return;
+  if (results.length === 1) {
+    navigateToDefinition(results[0]);
+    return;
+  }
+  const popup = document.createElement("div");
+  popup.className = "jump-popup";
+  popup.style.left = x + "px";
+  popup.style.top = y + "px";
+  popup.innerHTML = results
+    .map(
+      (r, i) => `
+    <div class="jump-popup-item" data-jump-idx="${i}">
+      <span class="jump-popup-file">${esc(r.filePath.split("/").pop())}</span>
+      <span class="jump-popup-line">L${r.line}</span>
+    </div>`
+    )
+    .join("");
+  document.body.appendChild(popup);
+  const close = (e) => {
+    if (!popup.contains(e.target)) {
+      popup.remove();
+      document.removeEventListener("click", close);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", close), 0);
+  popup.querySelectorAll(".jump-popup-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      navigateToDefinition(results[parseInt(item.dataset.jumpIdx)]);
+      popup.remove();
+    });
+  });
+}
+
+// ─── Section Helpers ─────────────────────────────────
+
+// QW1: Estimate reading time for a section (narrative + code)
+function getEstimatedReadTime(section) {
+  let wordCount = 0;
+  let codeLines = 0;
+
+  // Count words in narrative
+  if (section.narrative) {
+    wordCount += section.narrative.split(/\s+/).length;
+  }
+
+  // Count words in callouts
+  for (const c of section.callouts || []) {
+    if (c.text) wordCount += c.text.split(/\s+/).length;
+  }
+
+  // Count code lines from hunks
+  for (const hunk of section.hunks || []) {
+    const file = findFile(hunk.file);
+    if (file) {
+      for (const block of file.blocks || []) {
+        codeLines += block.lines?.length || 0;
+      }
+    }
+    if (hunk.annotation) wordCount += hunk.annotation.split(/\s+/).length;
+  }
+
+  // ~200 words/min for prose, ~30 lines/min for code review
+  const minutes = wordCount / 200 + codeLines / 30;
+  return Math.max(1, Math.round(minutes));
+}
+
+// QW7: Count comments for files in a section's hunks
+function getCommentCountForSection(section) {
+  if (!data?.comments?.length || !section.hunks?.length) return 0;
+  const sectionFiles = new Set(section.hunks.map((h) => h.file));
+  return data.comments.filter((c) =>
+    [...sectionFiles].some((f) => f === c.path || f.endsWith(c.path) || c.path.endsWith(f))
+  ).length;
 }
 
 // ─── Mermaid ─────────────────────────────────────────
@@ -360,9 +690,27 @@ function getFileCoverage(wt) {
 }
 
 // ─── Rendering ───────────────────────────────────────
+// ─── View Registry ───────────────────────────────────
+const viewLayouts = {
+  editorial: renderEditorialLayout,
+  sidebar: renderSidebarLayout,
+  focus: renderFocusLayout,
+  split: renderSplitLayout,
+  developer: renderDeveloperLayout,
+  dashboard: renderDashboardLayout,
+};
+
 function render() {
   const app = document.getElementById("app");
   const scrollY = window.scrollY;
+
+  // Apply dark mode
+  document.documentElement.classList.toggle("dark", darkMode || viewMode === "developer");
+
+  // Apply view mode class
+  document.documentElement.className = document.documentElement.className
+    .replace(/\bview-\w+\b/g, "").trim();
+  document.documentElement.classList.add(`view-${viewMode}`);
 
   if (!data) {
     app.innerHTML = renderLanding();
@@ -370,12 +718,26 @@ function render() {
     return;
   }
 
+  const layoutFn = viewLayouts[viewMode] || viewLayouts.editorial;
+  app.innerHTML = layoutFn();
+
+  setupHandlers();
+  renderMermaid(app);
+
+  // Restore scroll position (not meaningful for focus mode)
+  if (viewMode !== "focus") {
+    requestAnimationFrame(() => window.scrollTo(0, scrollY));
+  }
+}
+
+function getViewData() {
   const { walkthrough: wt, meta } = data;
-  const progress = getProgress();
+  return { wt, meta, progress: getProgress(), coverage: getFileCoverage(wt) };
+}
 
-  const coverage = getFileCoverage(wt);
-
-  app.innerHTML = `
+function renderEditorialLayout() {
+  const { wt, meta, progress, coverage } = getViewData();
+  return `
     <div class="page-container">
       ${renderHeader(wt, meta, progress)}
       ${renderProgressBar(progress)}
@@ -387,18 +749,229 @@ function render() {
       ${renderSections(wt)}
       ${renderRemainingChanges(coverage)}
       ${renderOrphanedComments(coverage)}
+      ${renderReviewCompleteBanner(progress)}
       ${renderFileMap(wt)}
       ${renderFooter(meta)}
     </div>
     ${renderMinimap(wt)}
     ${renderReviewModal()}
   `;
+}
 
-  setupHandlers();
-  renderMermaid(app);
+function renderSidebarLayout() {
+  const { wt, meta, progress, coverage } = getViewData();
+  return `
+    <div class="layout-sidebar">
+      <aside class="sidebar-panel">
+        <div class="sidebar-header-block">
+          <div class="kicker">Review</div>
+          <h3 style="font-family:var(--display);font-weight:400;font-size:1rem;margin:0.25rem 0">${esc(wt.title)}</h3>
+          <div class="meta" style="margin-top:0.5rem">${meta.headBranch} → ${meta.baseBranch}</div>
+        </div>
+        ${renderProgressBar(progress)}
+        ${renderTOC(wt, coverage)}
+        ${renderSidebarFileTree(coverage)}
+      </aside>
+      <div class="sidebar-main">
+        <div class="page-container" style="max-width:920px">
+          ${renderCoverageBar(coverage)}
+          ${renderToolbar()}
+          ${renderReviewsSummary()}
+          ${renderOverview(wt)}
+          ${renderSections(wt)}
+          ${renderRemainingChanges(coverage)}
+          ${renderOrphanedComments(coverage)}
+          ${renderFileMap(wt)}
+          ${renderFooter(meta)}
+        </div>
+      </div>
+    </div>
+    ${renderReviewModal()}
+  `;
+}
 
-  // Restore scroll position
-  requestAnimationFrame(() => window.scrollTo(0, scrollY));
+function renderSidebarFileTree(coverage) {
+  if (!coverage) return "";
+  const allFiles = [...(coverage.covered || []), ...(coverage.uncovered || [])].sort();
+  const groups = groupFilesByDirectory(allFiles);
+  let html = '<div class="sidebar-files"><div class="sidebar-section-title">Files</div>';
+  for (const [dir, files] of groups) {
+    html += `<div class="sidebar-dir">${esc(dir || "(root)")}/</div>`;
+    for (const f of files) {
+      const isCovered = coverage.covered?.includes(f);
+      const isReviewed = reviewState[`file:${f}`]?.reviewed;
+      const dotClass = isReviewed ? "reviewed" : isCovered ? "covered" : "uncovered";
+      const name = f.split("/").pop();
+      const file = parsedFiles[f];
+      const stats = file ? getFileStats(file) : null;
+      html += `<div class="sidebar-file"><span class="sidebar-dot ${dotClass}"></span><span class="sidebar-fname">${esc(name)}</span>${stats ? `<span class="sidebar-fstats">+${stats.additions} −${stats.deletions}</span>` : ""}</div>`;
+    }
+  }
+  html += "</div>";
+  return html;
+}
+
+function renderFocusLayout() {
+  const { wt, meta, progress, coverage } = getViewData();
+  const sections = wt.sections || [];
+  const totalSteps = sections.length + (coverage.uncoveredCount > 0 ? 1 : 0) + 1; // +1 for overview, +1 for remaining
+  const idx = Math.min(currentSectionIndex, totalSteps - 1);
+
+  let sectionHtml;
+  if (idx === 0) {
+    sectionHtml = renderOverview(wt);
+  } else if (idx <= sections.length) {
+    sectionHtml = renderSection(sections[idx - 1], idx - 1);
+  } else {
+    sectionHtml = renderRemainingChanges(coverage);
+  }
+
+  const stepDots = [`<span class="focus-dot ${idx === 0 ? "active" : ""}" data-focus-step="0" title="Overview">○</span>`];
+  sections.forEach((s, i) => {
+    const reviewed = reviewState[s.id]?.reviewed;
+    stepDots.push(`<span class="focus-dot ${idx === i + 1 ? "active" : ""} ${reviewed ? "reviewed" : ""}" data-focus-step="${i + 1}" title="${esc(s.title)}">${i + 1}</span>`);
+  });
+  if (coverage.uncoveredCount > 0) {
+    stepDots.push(`<span class="focus-dot ${idx === sections.length + 1 ? "active" : ""}" data-focus-step="${sections.length + 1}" title="Remaining">+</span>`);
+  }
+
+  return `
+    <div class="layout-focus">
+      <div class="focus-topbar">
+        <span class="focus-title">${esc(wt.title)}</span>
+        <span class="focus-meta">${meta.changedFiles} files · +${meta.additions} −${meta.deletions}</span>
+        <span style="flex:1"></span>
+        <div class="focus-dots">${stepDots.join("")}</div>
+        <span style="flex:1"></span>
+        ${renderViewSwitcher()}
+        <button class="btn btn-sm btn-icon" id="btn-dark-mode" title="Toggle dark mode">${darkMode ? "☀" : "☾"}</button>
+      </div>
+      <div class="focus-content">
+        <div class="page-container" style="max-width:900px">
+          ${sectionHtml}
+          <div class="focus-bottom-nav">
+            <button class="btn" id="btn-prev-section" ${idx === 0 ? "disabled" : ""}>← Previous</button>
+            <span class="focus-counter">${idx + 1} / ${totalSteps}</span>
+            <button class="btn btn-primary" id="btn-next-section" ${idx >= totalSteps - 1 ? "disabled" : ""}>Next →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    ${renderReviewModal()}
+  `;
+}
+
+function renderSplitLayout() {
+  const { wt, meta, progress, coverage } = getViewData();
+  const sections = wt.sections || [];
+
+  let leftHtml = "";
+  let rightHtml = "";
+
+  // Overview
+  leftHtml += `<div class="split-section" data-split-section="overview"><div class="narrative">${md(wt.overview)}</div></div>`;
+  rightHtml += `<div class="split-section" data-split-section="overview">`;
+  if (wt.architecture_diagram) {
+    rightHtml += `<div class="diagram-container"><div class="diagram-label">Architecture</div><div class="mermaid-source">${esc(wt.architecture_diagram)}</div></div>`;
+  }
+  rightHtml += `</div>`;
+
+  for (const s of sections) {
+    const reviewed = reviewState[s.id]?.reviewed;
+    // Left: narrative + callouts
+    leftHtml += `<div class="split-section ${reviewed ? "reviewed" : ""}" data-split-section="${esc(s.id)}">`;
+    leftHtml += `<span class="section-number">${esc(s.title)}</span>`;
+    leftHtml += `<div class="narrative">${md(s.narrative)}</div>`;
+    if (s.callouts?.length) {
+      for (const c of s.callouts) {
+        leftHtml += `<div class="callout ${esc(c.type)}"><span class="callout-label">${esc(c.label)}</span>${md(c.text)}</div>`;
+      }
+    }
+    leftHtml += `<label class="review-checkbox"><input type="checkbox" ${reviewed ? "checked" : ""} data-section-review="${esc(s.id)}" /><span class="review-checkbox-label">${reviewed ? "Reviewed ✓" : "Mark reviewed"}</span></label>`;
+    leftHtml += `</div>`;
+
+    // Right: diffs
+    rightHtml += `<div class="split-section" data-split-section="${esc(s.id)}">`;
+    if (s.hunks?.length) {
+      rightHtml += renderGroupedHunks(s.hunks, s.id);
+    }
+    rightHtml += `</div>`;
+  }
+
+  return `
+    <div class="layout-split">
+      <div class="split-header">
+        <div class="page-container">
+          ${renderHeader(wt, meta, progress)}
+          ${renderToolbar()}
+        </div>
+      </div>
+      <div class="split-panes">
+        <div class="split-left">${leftHtml}</div>
+        <div class="split-right">${rightHtml}</div>
+      </div>
+    </div>
+    ${renderReviewModal()}
+  `;
+}
+
+function renderDeveloperLayout() {
+  // Same as editorial but CSS makes it compact/monospace. Dark mode forced.
+  return renderEditorialLayout();
+}
+
+function renderDashboardLayout() {
+  const { wt, meta, progress, coverage } = getViewData();
+  const sections = wt.sections || [];
+
+  let cardsHtml = "";
+  for (const [i, s] of sections.entries()) {
+    const reviewed = reviewState[s.id]?.reviewed;
+    const fileCount = new Set(s.hunks?.map((h) => h.file) || []).size;
+    const topImp = s.hunks?.find((h) => h.importance === "critical") ? "critical" : s.hunks?.find((h) => h.importance === "important") ? "important" : "supporting";
+    cardsHtml += `
+      <div class="dashboard-card ${reviewed ? "reviewed" : ""}" data-dashboard-section="${i}">
+        <div class="dashboard-card-header">
+          <span class="dashboard-num">${String(i + 1).padStart(2, "0")}</span>
+          <span class="dashboard-status ${reviewed ? "done" : ""}">${reviewed ? "✓" : "○"}</span>
+        </div>
+        <h3 class="dashboard-card-title">${esc(s.title)}</h3>
+        <div class="dashboard-card-meta">
+          <span class="hunk-importance importance-badge-${topImp}">${topImp}</span>
+          <span>${fileCount} file${fileCount !== 1 ? "s" : ""}</span>
+          <span>${s.hunks?.length || 0} hunks</span>
+        </div>
+      </div>
+    `;
+  }
+
+  if (coverage.uncoveredCount > 0) {
+    const revRemaining = reviewState["__remaining"]?.reviewed;
+    cardsHtml += `
+      <div class="dashboard-card remaining ${revRemaining ? "reviewed" : ""}">
+        <div class="dashboard-card-header">
+          <span class="dashboard-num">+</span>
+          <span class="dashboard-status ${revRemaining ? "done" : ""}">${revRemaining ? "✓" : "○"}</span>
+        </div>
+        <h3 class="dashboard-card-title">Remaining Changes</h3>
+        <div class="dashboard-card-meta"><span>${coverage.uncoveredCount} files not in walkthrough</span></div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="page-container">
+      ${renderHeader(wt, meta, progress)}
+      ${renderProgressBar(progress)}
+      ${renderCoverageBar(coverage)}
+      ${renderToolbar()}
+      ${renderReviewsSummary()}
+      <div class="dashboard-grid">${cardsHtml}</div>
+      ${renderFileMap(wt)}
+      ${renderFooter(meta)}
+    </div>
+    ${renderReviewModal()}
+  `;
 }
 
 function renderLanding() {
@@ -448,17 +1021,29 @@ function renderLanding() {
 }
 
 function renderHeader(wt, meta, progress) {
+  // QW8: Show PR author and reviewer names
+  const author = meta.author ? `<span class="meta-item meta-author">by ${esc(meta.author)}</span>` : "";
+  const reviewerNames = (data?.reviews || [])
+    .filter((r) => r.state !== "PENDING" && r.state !== "DISMISSED" && r.user)
+    .map((r) => r.user)
+    .filter((v, i, a) => a.indexOf(v) === i); // unique
+  const reviewers = reviewerNames.length
+    ? `<span class="meta-item meta-reviewers">Reviewers: ${reviewerNames.map((n) => esc(n)).join(", ")}</span>`
+    : "";
+
   return `
     <header class="page-header">
       <div class="kicker">Code Review Walkthrough</div>
       <h1>${esc(wt.title)}</h1>
       <p class="subtitle">${esc(wt.subtitle)}</p>
       <div class="meta">
+        ${author}
         ${meta.url ? `<span class="meta-item"><a href="${esc(meta.url)}" target="_blank">PR Link ↗</a></span>` : ""}
         <span class="meta-item">${esc(meta.headBranch)} → ${esc(meta.baseBranch)}</span>
         <span class="meta-item">+${meta.additions} −${meta.deletions}</span>
         <span class="meta-item">${meta.changedFiles} files</span>
         <span class="meta-item review-status ${progress.pct === 100 ? "complete" : ""}">${progress.reviewed}/${progress.total} sections reviewed</span>
+        ${reviewers}
       </div>
     </header>
   `;
@@ -515,11 +1100,27 @@ function renderToolbar() {
       <div class="toolbar-group">
         <button class="btn btn-sm" id="btn-reset-review">Reset Review</button>
       </div>
+      ${renderViewSwitcher()}
+      <button class="btn btn-sm btn-icon" id="btn-dark-mode" title="Toggle dark mode">${darkMode ? "☀" : "☾"}</button>
       <div class="toolbar-hint">
-        <kbd>j</kbd>/<kbd>k</kbd> navigate &nbsp; <kbd>r</kbd> review &nbsp; <kbd>e</kbd> expand/collapse
+        <kbd>j</kbd>/<kbd>k</kbd> navigate &nbsp; <kbd>n</kbd> next unreviewed &nbsp; <kbd>r</kbd> review &nbsp; <kbd>e</kbd> expand/collapse &nbsp; <kbd>?</kbd> help
       </div>
     </div>
   `;
+}
+
+function renderViewSwitcher() {
+  const views = [
+    ["editorial", "Editorial"],
+    ["sidebar", "Sidebar"],
+    ["focus", "Focus"],
+    ["split", "Split"],
+    ["developer", "Dev"],
+    ["dashboard", "Dashboard"],
+  ];
+  return `<div class="toolbar-group view-switcher">${views.map(([id, label]) =>
+    `<button class="btn btn-sm ${viewMode === id ? "active" : ""}" data-view="${id}">${label}</button>`
+  ).join("")}</div>`;
 }
 
 function renderTOC(wt, coverage) {
@@ -527,7 +1128,12 @@ function renderTOC(wt, coverage) {
   let items = wt.sections
     .map((s) => {
       const reviewed = reviewState[s.id]?.reviewed;
-      return `<li class="${reviewed ? "reviewed" : ""}"><a href="#section-${esc(s.id)}">${esc(s.title)}${reviewed ? ' <span class="check">✓</span>' : ""}</a></li>`;
+      const readTime = getEstimatedReadTime(s);
+      const commentCount = getCommentCountForSection(s);
+      const meta = [];
+      meta.push(`${readTime} min`);
+      if (commentCount > 0) meta.push(`${commentCount} comment${commentCount > 1 ? "s" : ""}`);
+      return `<li class="${reviewed ? "reviewed" : ""}"><a href="#section-${esc(s.id)}"><span class="toc-title">${esc(s.title)}</span>${reviewed ? ' <span class="check">✓</span>' : ""}<span class="toc-meta">${meta.join(" · ")}</span></a></li>`;
     })
     .join("");
 
@@ -578,12 +1184,14 @@ function renderSections(wt) {
 function renderSection(section, index) {
   const reviewed = reviewState[section.id]?.reviewed;
   const collapsed = collapsedSections.has(section.id);
+  // QW4: Count unique files in this section
+  const fileCount = new Set(section.hunks?.map((h) => h.file) || []).size;
 
   let html = `
     <section id="section-${esc(section.id)}" class="review-section ${reviewed ? "reviewed" : ""} ${collapsed ? "collapsed" : ""}">
       <div class="section-header" data-section="${esc(section.id)}">
         <div class="section-header-left">
-          <span class="section-number">Section ${String(index + 1).padStart(2, "0")}</span>
+          <span class="section-number">Section ${String(index + 1).padStart(2, "0")}${fileCount > 0 ? ` · ${fileCount} file${fileCount !== 1 ? "s" : ""}` : ""}</span>
           <h2>${esc(section.title)}</h2>
         </div>
         <div class="section-header-right">
@@ -632,6 +1240,43 @@ function renderSection(section, index) {
   }
 
   html += `</section>`;
+  return html;
+}
+
+function renderFileBlocksWithExpand(displayFile, mode, filePath, hunkKey) {
+  const blocks = displayFile.blocks;
+  if (!blocks.length) return renderFileDiff(displayFile, mode);
+  const canExpand = isGitHubPR();
+  let html = "";
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+
+    if (canExpand) {
+      if (i === 0 && block.newStartLine > 1) {
+        const count = Math.min(20, block.newStartLine - 1);
+        html += `<div class="expand-context-bar" data-expand-file="${esc(filePath)}" data-expand-dir="up" data-expand-block="${block.newStartLine}" data-expand-hunk-key="${esc(hunkKey)}"><span class="expand-icon">⋮</span> Show ${count} line${count > 1 ? "s" : ""} above</div>`;
+      } else if (i > 0) {
+        const { lastNew: prevEnd } = getBlockEndLines(blocks[i - 1]);
+        const gap = block.newStartLine - prevEnd - 1;
+        if (gap > 0) {
+          html += `<div class="expand-context-bar" data-expand-file="${esc(filePath)}" data-expand-dir="between" data-expand-block="${block.newStartLine}" data-expand-hunk-key="${esc(hunkKey)}"><span class="expand-icon">⋮</span> Show ${gap} hidden line${gap > 1 ? "s" : ""}</div>`;
+        }
+      }
+    }
+
+    const singleBlockFile = { ...displayFile, blocks: [block] };
+    html += diff2htmlHtml([singleBlockFile], {
+      drawFileList: false,
+      matching: "lines",
+      outputFormat: mode === "unified" ? "line-by-line" : "side-by-side",
+    });
+  }
+
+  if (canExpand && blocks.length > 0) {
+    html += `<div class="expand-context-bar" data-expand-file="${esc(filePath)}" data-expand-dir="down" data-expand-block="${blocks[blocks.length - 1].newStartLine}" data-expand-hunk-key="${esc(hunkKey)}"><span class="expand-icon">⋮</span> Show 20 lines below</div>`;
+  }
+
   return html;
 }
 
@@ -698,13 +1343,13 @@ function renderGroupedHunks(hunks, sectionId) {
         const canFilter = filteredFile.blocks.length < file.blocks.length;
         const displayFile = isFull ? file : filteredFile;
 
-        html += `<div class="hunk-diff">`;
+        html += `<div class="hunk-diff" data-hunk-file="${esc(filePath)}" data-hunk-key="${esc(hunkKey)}">`;
         if (canFilter && !isFull) {
           html += `<div class="diff-filter-notice">Showing ${filteredFile.blocks.length} of ${file.blocks.length} hunks matching referenced lines · <button class="btn-link" data-show-full="${esc(hunkKey)}">Show all ${file.blocks.length} hunks</button></div>`;
         } else if (canFilter && isFull) {
           html += `<div class="diff-filter-notice">Showing all ${file.blocks.length} hunks · <button class="btn-link" data-show-full="${esc(hunkKey)}">Show only referenced hunks</button></div>`;
         }
-        html += renderFileDiff(displayFile, diffViewMode);
+        html += renderFileBlocksWithExpand(displayFile, diffViewMode, filePath, hunkKey);
         html += `</div>`;
       } else {
         html += `<div class="hunk-diff no-diff">File "${esc(filePath)}" not found in diff</div>`;
@@ -832,8 +1477,15 @@ function renderRemainingChanges(coverage) {
   const reviewed = reviewState["__remaining"]?.reviewed;
   const collapsed = collapsedSections.has("__remaining");
 
+  // QW6: Sort uncovered files by size (lines changed) descending
+  const sortedUncovered = [...coverage.uncovered].sort((a, b) => {
+    const statsA = parsedFiles[a] ? getFileStats(parsedFiles[a]) : { additions: 0, deletions: 0 };
+    const statsB = parsedFiles[b] ? getFileStats(parsedFiles[b]) : { additions: 0, deletions: 0 };
+    return (statsB.additions + statsB.deletions) - (statsA.additions + statsA.deletions);
+  });
+
   // Group uncovered files by directory to reduce overwhelm
-  const groups = groupFilesByDirectory(coverage.uncovered);
+  const groups = groupFilesByDirectory(sortedUncovered);
 
   let html = `
     <section id="section-remaining" class="review-section remaining-section ${reviewed ? "reviewed" : ""} ${collapsed ? "collapsed" : ""}">
@@ -1026,6 +1678,28 @@ function renderFileMap(wt) {
   `;
 }
 
+// QW5: Review complete prompt when all sections are checked
+function renderReviewCompleteBanner(progress) {
+  if (progress.pct !== 100 || progress.total === 0) return "";
+  const gh = isGitHubPR();
+
+  return `
+    <div class="review-complete-banner">
+      <div class="review-complete-icon">✓</div>
+      <div class="review-complete-text">
+        <strong>Review complete</strong> — All ${progress.total} sections reviewed.
+        ${gh ? "Ready to submit your review?" : ""}
+      </div>
+      ${gh ? `
+        <div class="review-complete-actions">
+          <button class="btn btn-sm btn-approve" id="btn-complete-approve">Approve</button>
+          <button class="btn btn-sm btn-request-changes" id="btn-complete-request-changes">Request Changes</button>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
 function renderFooter(meta) {
   return `
     <footer class="page-footer">
@@ -1050,6 +1724,52 @@ function renderMinimap(wt) {
 
 // ─── Handlers ────────────────────────────────────────
 function setupHandlers() {
+  // View mode switcher
+  document.querySelectorAll("[data-view]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      viewMode = btn.dataset.view;
+      localStorage.setItem("review-tool-view", viewMode);
+      render();
+    });
+  });
+
+  // Dark mode toggle
+  document.getElementById("btn-dark-mode")?.addEventListener("click", () => {
+    darkMode = !darkMode;
+    localStorage.setItem("review-tool-dark", String(darkMode));
+    render();
+  });
+
+  // Focus mode navigation
+  if (viewMode === "focus") {
+    document.getElementById("btn-prev-section")?.addEventListener("click", () => {
+      currentSectionIndex = Math.max(0, currentSectionIndex - 1);
+      render();
+    });
+    document.getElementById("btn-next-section")?.addEventListener("click", () => {
+      currentSectionIndex++;
+      render();
+    });
+    document.querySelectorAll("[data-focus-step]").forEach((el) => {
+      el.addEventListener("click", () => {
+        currentSectionIndex = parseInt(el.dataset.focusStep);
+        render();
+      });
+    });
+  }
+
+  // Dashboard card click → switch to focus on that section
+  if (viewMode === "dashboard") {
+    document.querySelectorAll("[data-dashboard-section]").forEach((card) => {
+      card.addEventListener("click", () => {
+        currentSectionIndex = parseInt(card.dataset.dashboardSection) + 1; // +1 for overview
+        viewMode = "focus";
+        localStorage.setItem("review-tool-view", viewMode);
+        render();
+      });
+    });
+  }
+
   // Diff view mode toggle
   document.querySelectorAll("[data-mode]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1081,6 +1801,7 @@ function setupHandlers() {
       } else {
         collapsedSections.add(id);
       }
+      saveReviewState();
       render();
     });
   });
@@ -1094,6 +1815,7 @@ function setupHandlers() {
       } else {
         collapsedHunks.add(key);
       }
+      saveReviewState();
       render();
     });
   });
@@ -1122,6 +1844,7 @@ function setupHandlers() {
       } else {
         collapsedSections.add(id);
       }
+      saveReviewState();
       render();
     });
   });
@@ -1130,11 +1853,13 @@ function setupHandlers() {
   document.getElementById("btn-expand-all")?.addEventListener("click", () => {
     collapsedSections.clear();
     collapsedHunks.clear();
+    saveReviewState();
     render();
   });
 
   document.getElementById("btn-collapse-all")?.addEventListener("click", () => {
     data.walkthrough.sections.forEach((s) => collapsedSections.add(s.id));
+    saveReviewState();
     render();
   });
 
@@ -1227,6 +1952,14 @@ function setupHandlers() {
     openReviewModal("REQUEST_CHANGES", "Request Changes");
   });
 
+  // QW5: Review complete banner buttons
+  document.getElementById("btn-complete-approve")?.addEventListener("click", () => {
+    openReviewModal("APPROVE", "Approve this PR");
+  });
+  document.getElementById("btn-complete-request-changes")?.addEventListener("click", () => {
+    openReviewModal("REQUEST_CHANGES", "Request Changes");
+  });
+
   // Review modal handlers
   document.querySelectorAll("[data-close-modal]").forEach((el) => {
     el.addEventListener("click", () => {
@@ -1262,6 +1995,37 @@ function setupHandlers() {
       }
     }
   });
+
+  // Expand context buttons
+  document.querySelectorAll("[data-expand-file]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const filePath = btn.dataset.expandFile;
+      const dir = btn.dataset.expandDir;
+      const blockStart = parseInt(btn.dataset.expandBlock);
+      const hunkKey = btn.dataset.expandHunkKey;
+      btn.textContent = "Loading...";
+      btn.classList.add("loading");
+      if (hunkKey) showFullFile.add(hunkKey);
+      await expandContext(filePath, dir, blockStart);
+    });
+  });
+
+  // Jump to definition (Ctrl+Click on code in diff)
+  if (!window.__jumpToDefBound) {
+    document.addEventListener("click", (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const codeLine = e.target.closest(".d2h-code-line-ctn, .d2h-code-side-line");
+      if (!codeLine) return;
+      const word = getWordAtPoint(e);
+      if (!word || word.length < 2) return;
+      e.preventDefault();
+      const defs = findDefinitionsInDiff(word);
+      if (defs.length > 0) {
+        showJumpPopup(defs, e.pageX, e.pageY);
+      }
+    });
+    window.__jumpToDefBound = true;
+  }
 }
 
 function openReviewModal(event, title) {
@@ -1304,6 +2068,7 @@ function setupLandingHandlers() {
         data = JSON.parse(e.target.result);
         parsedFiles = parseDiff(data.diff);
         loadReviewState();
+        applyAutoCollapse();
         render();
       } catch (err) {
         alert("Failed to parse JSON: " + err.message);
@@ -1320,6 +2085,7 @@ function setupLandingHandlers() {
         data = await resp.json();
         parsedFiles = parseDiff(data.diff);
         loadReviewState();
+        applyAutoCollapse();
         render();
       } else {
         alert(
@@ -1401,6 +2167,62 @@ function handleKeyboard(e) {
     }
     e.preventDefault();
   }
+
+  // QW3: n to jump to next unreviewed section
+  if (e.key === "n") {
+    const allSections = data.walkthrough?.sections || [];
+    const coverage = getFileCoverage(data.walkthrough);
+    const sectionIds = allSections.map((s) => s.id);
+    if (coverage.uncoveredCount > 0) sectionIds.push("__remaining");
+
+    const firstUnreviewed = sectionIds.find((id) => !reviewState[id]?.reviewed);
+    if (firstUnreviewed) {
+      const targetId = firstUnreviewed === "__remaining" ? "section-remaining" : `section-${firstUnreviewed}`;
+      const target = document.getElementById(targetId);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+    e.preventDefault();
+  }
+
+  // QW9: ? to show keyboard shortcuts
+  if (e.key === "?") {
+    toggleShortcutsModal();
+    e.preventDefault();
+  }
+}
+
+// QW9: Shortcuts modal
+function toggleShortcutsModal() {
+  let modal = document.getElementById("shortcuts-modal");
+  if (modal) {
+    modal.remove();
+    return;
+  }
+
+  modal = document.createElement("div");
+  modal.id = "shortcuts-modal";
+  modal.className = "shortcuts-modal";
+  modal.innerHTML = `
+    <div class="shortcuts-modal-backdrop" data-close-shortcuts></div>
+    <div class="shortcuts-modal-content">
+      <h3>Keyboard Shortcuts</h3>
+      <div class="shortcuts-list">
+        <div class="shortcut-row"><kbd>j</kbd> / <kbd>k</kbd><span>Next / previous section</span></div>
+        <div class="shortcut-row"><kbd>n</kbd><span>Jump to next unreviewed section</span></div>
+        <div class="shortcut-row"><kbd>r</kbd><span>Toggle review on current section</span></div>
+        <div class="shortcut-row"><kbd>e</kbd><span>Expand / collapse current section</span></div>
+        <div class="shortcut-row"><kbd>?</kbd><span>Show this help</span></div>
+      </div>
+      <button class="btn btn-sm" data-close-shortcuts>Close</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.querySelectorAll("[data-close-shortcuts]").forEach((el) => {
+    el.addEventListener("click", () => modal.remove());
+  });
 }
 
 // ─── Utility ─────────────────────────────────────────
@@ -1422,6 +2244,7 @@ async function init() {
       data = await resp.json();
       parsedFiles = parseDiff(data.diff);
       loadReviewState();
+      applyAutoCollapse(); // QW2: auto-collapse supporting/context hunks
     }
   } catch {
     // No data, show landing

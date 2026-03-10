@@ -21,7 +21,8 @@ function ghApiProxy() {
             const { method, endpoint, data } = JSON.parse(body);
             const httpMethod = (method || 'GET').toUpperCase();
 
-            let cmd = `gh api ${endpoint} --method ${httpMethod}`;
+            const safeEndpoint = endpoint.replace(/'/g, "'\\''");
+            let cmd = `gh api '${safeEndpoint}' --method ${httpMethod}`;
 
             // Add request body fields
             if (data && typeof data === 'object') {
