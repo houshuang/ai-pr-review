@@ -619,6 +619,25 @@ strong { font-weight: 600; }
   font-style: italic;
 }
 
+.diff-filter-notice {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.7rem;
+  font-family: var(--mono);
+  color: var(--gray);
+  background: var(--paper-dark);
+  border-bottom: 1px solid var(--gray-lighter);
+}
+
+.diff-filter-notice .btn-link {
+  background: none;
+  border: none;
+  color: var(--blue);
+  font: inherit;
+  cursor: var(--cursor-link, pointer);
+  text-decoration: underline;
+  padding: 0;
+}
+
 /* Importance-based left border */
 .importance-critical { border-left: 3px solid var(--accent); }
 .importance-important { border-left: 3px solid var(--blue); }

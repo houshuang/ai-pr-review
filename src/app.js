@@ -11,6 +11,7 @@ let collapsedSections = new Set();
 let collapsedHunks = new Set(); // file-level collapse within sections
 let pendingComments = []; // { path, line, side, body } — queued for review submission
 let showComments = true;
+let showFullFile = new Set(); // hunkKeys where user wants to see full file instead of filtered
 
 function loadReviewState() {
   try {
@@ -64,6 +65,42 @@ function renderFileDiff(file, mode) {
     outputFormat: mode === "unified" ? "line-by-line" : "side-by-side",
     rawTemplates: {},
   });
+}
+
+// Filter a diff2html file to only include blocks overlapping the given line ranges.
+// Each range is { startLine, endLine } referencing new-file line numbers.
+// Returns a shallow copy with filtered blocks, or the original if no ranges given.
+function filterFileToRanges(file, ranges) {
+  if (!file || !ranges || ranges.length === 0) return file;
+
+  // Expand each range by a small context margin to capture nearby blocks
+  const CONTEXT = 5;
+  const expanded = ranges
+    .filter((r) => r.startLine && r.endLine)
+    .map((r) => ({ start: r.startLine - CONTEXT, end: r.endLine + CONTEXT }));
+
+  if (expanded.length === 0) return file;
+
+  const filtered = file.blocks.filter((block) => {
+    // Compute the new-file line range this block covers
+    const blockStart = block.newStartLine;
+    let blockEnd = blockStart;
+    for (const line of block.lines) {
+      if (line.newNumber) blockEnd = Math.max(blockEnd, line.newNumber);
+    }
+    // Keep block if it overlaps any requested range
+    return expanded.some((r) => blockStart <= r.end && blockEnd >= r.start);
+  });
+
+  if (filtered.length === file.blocks.length) return file;
+
+  return {
+    ...file,
+    blocks: filtered,
+    // Recount added/deleted from filtered blocks
+    addedLines: filtered.reduce((n, b) => n + b.lines.filter((l) => l.type === "insert").length, 0),
+    deletedLines: filtered.reduce((n, b) => n + b.lines.filter((l) => l.type === "delete").length, 0),
+  };
 }
 
 // ─── Mermaid ─────────────────────────────────────────
@@ -654,9 +691,21 @@ function renderGroupedHunks(hunks, sectionId) {
         }
       }
 
-      // Show the file diff once
+      // Show the file diff — filtered to referenced line ranges unless user toggled full view
       if (file) {
-        html += `<div class="hunk-diff">${renderFileDiff(file, diffViewMode)}</div>`;
+        const isFull = showFullFile.has(hunkKey);
+        const filteredFile = filterFileToRanges(file, fileHunks);
+        const canFilter = filteredFile.blocks.length < file.blocks.length;
+        const displayFile = isFull ? file : filteredFile;
+
+        html += `<div class="hunk-diff">`;
+        if (canFilter && !isFull) {
+          html += `<div class="diff-filter-notice">Showing ${filteredFile.blocks.length} of ${file.blocks.length} hunks matching referenced lines · <button class="btn-link" data-show-full="${esc(hunkKey)}">Show all ${file.blocks.length} hunks</button></div>`;
+        } else if (canFilter && isFull) {
+          html += `<div class="diff-filter-notice">Showing all ${file.blocks.length} hunks · <button class="btn-link" data-show-full="${esc(hunkKey)}">Show only referenced hunks</button></div>`;
+        }
+        html += renderFileDiff(displayFile, diffViewMode);
+        html += `</div>`;
       } else {
         html += `<div class="hunk-diff no-diff">File "${esc(filePath)}" not found in diff</div>`;
       }
@@ -1044,6 +1093,20 @@ function setupHandlers() {
         collapsedHunks.delete(key);
       } else {
         collapsedHunks.add(key);
+      }
+      render();
+    });
+  });
+
+  // Toggle full/filtered file diff view
+  document.querySelectorAll("[data-show-full]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const key = btn.dataset.showFull;
+      if (showFullFile.has(key)) {
+        showFullFile.delete(key);
+      } else {
+        showFullFile.add(key);
       }
       render();
     });
