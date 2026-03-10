@@ -1,0 +1,22 @@
+{
+  "name": "review-tool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "generate": "node src/generate.js"
+  },
+  "dependencies": {
+    "diff2html": "^3.4.48",
+    "@anthropic-ai/sdk": "^0.39.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}
