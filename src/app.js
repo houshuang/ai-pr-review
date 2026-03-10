@@ -107,7 +107,9 @@ async function renderMermaid(container) {
   for (const el of els) {
     const id = `mermaid-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { svg } = await window.mermaid.render(id, el.textContent.trim());
+      // Strip ```mermaid fences if the AI included them
+      const raw = el.textContent.trim().replace(/^```(?:mermaid)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+      const { svg } = await window.mermaid.render(id, raw);
       const div = document.createElement("div");
       div.className = "mermaid-rendered";
       div.innerHTML = svg;
@@ -825,7 +827,8 @@ function renderRemainingChanges(coverage) {
         for (const filePath of files) {
           const file = parsedFiles[filePath];
           const fileKey = `__remaining:file:${filePath}`;
-          const fileCollapsed = collapsedHunks.has(fileKey);
+          // Remaining files start collapsed by default (inverted logic: set = expanded)
+          const fileCollapsed = !collapsedHunks.has(fileKey);
           const fileReviewed = reviewState[`file:${filePath}`]?.reviewed;
           const fileComments = getCommentThreads(filePath);
           const fileName = filePath.split("/").pop();
