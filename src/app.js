@@ -9,6 +9,8 @@ let reviewState = {}; // { [sectionId]: { reviewed: bool, timestamp } }
 let diffViewMode = "side-by-side"; // "side-by-side" | "unified"
 let collapsedSections = new Set();
 let collapsedHunks = new Set(); // file-level collapse within sections
+let pendingComments = []; // { path, line, side, body } — queued for review submission
+let showComments = true;
 
 function loadReviewState() {
   try {
@@ -142,14 +144,180 @@ function md(text) {
     );
 }
 
+// ─── GitHub API ──────────────────────────────────────
+function isGitHubPR() {
+  return data?.meta?.source === "github" && data?.meta?.owner && data?.meta?.repo && data?.meta?.number;
+}
+
+async function ghApi(method, endpoint, body) {
+  const resp = await fetch("/api/gh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method, endpoint, data: body }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: "Request failed" }));
+    throw new Error(err.error || err.stderr || "GitHub API error");
+  }
+  const text = await resp.text();
+  return text ? JSON.parse(text) : null;
+}
+
+function getCommentsForFile(filePath) {
+  if (!data?.comments?.length) return [];
+  return data.comments.filter((c) => c.path === filePath || filePath.endsWith(c.path) || c.path.endsWith(filePath));
+}
+
+function getCommentThreads(filePath) {
+  const comments = getCommentsForFile(filePath);
+  // Group by thread: top-level comments + their replies
+  const topLevel = comments.filter((c) => !c.inReplyToId);
+  const replies = comments.filter((c) => c.inReplyToId);
+
+  return topLevel.map((c) => ({
+    ...c,
+    replies: replies.filter((r) => r.inReplyToId === c.id).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)),
+  }));
+}
+
+async function postComment(path, line, side, body) {
+  if (!isGitHubPR()) return;
+  const { owner, repo, number } = data.meta;
+
+  const result = await ghApi("POST", `repos/${owner}/${repo}/pulls/${number}/comments`, {
+    body,
+    path,
+    line: String(line),
+    side: side || "RIGHT",
+    commit_id: "", // gh will use the latest commit
+  });
+
+  // Add to local data
+  data.comments.push({
+    id: result.id,
+    path,
+    line,
+    side: side || "RIGHT",
+    body,
+    user: "you",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    inReplyToId: null,
+    diffHunk: "",
+  });
+
+  return result;
+}
+
+async function submitReview(event, body) {
+  if (!isGitHubPR()) return;
+  const { owner, repo, number } = data.meta;
+
+  const result = await ghApi("POST", `repos/${owner}/${repo}/pulls/${number}/reviews`, {
+    body: body || "",
+    event, // APPROVE, REQUEST_CHANGES, COMMENT
+  });
+
+  data.reviews.push({
+    id: result.id,
+    user: "you",
+    state: event === "APPROVE" ? "APPROVED" : event === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "COMMENTED",
+    body: body || "",
+    submittedAt: new Date().toISOString(),
+  });
+
+  return result;
+}
+
+async function refreshComments() {
+  if (!isGitHubPR()) return;
+  const { owner, repo, number } = data.meta;
+
+  try {
+    const comments = await ghApi("GET", `repos/${owner}/${repo}/pulls/${number}/comments`);
+    data.comments = comments.map((c) => ({
+      id: c.id,
+      path: c.path,
+      line: c.line || c.original_line,
+      side: c.side || "RIGHT",
+      body: c.body,
+      user: c.user?.login,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      inReplyToId: c.in_reply_to_id || null,
+      diffHunk: c.diff_hunk,
+    }));
+
+    const reviews = await ghApi("GET", `repos/${owner}/${repo}/pulls/${number}/reviews`);
+    data.reviews = reviews.map((r) => ({
+      id: r.id,
+      user: r.user?.login,
+      state: r.state,
+      body: r.body,
+      submittedAt: r.submitted_at,
+    }));
+
+    render();
+  } catch (err) {
+    console.error("Failed to refresh comments:", err);
+  }
+}
+
 // ─── Progress ────────────────────────────────────────
 function getProgress() {
   if (!data?.walkthrough?.sections) return { reviewed: 0, total: 0, pct: 0 };
-  const total = data.walkthrough.sections.length;
-  const reviewed = data.walkthrough.sections.filter(
-    (s) => reviewState[s.id]?.reviewed
-  ).length;
+  // Count sections + remaining files section (if any)
+  const sectionIds = data.walkthrough.sections.map((s) => s.id);
+  const coverage = getFileCoverage(data.walkthrough);
+  if (coverage.uncovered.length > 0) sectionIds.push("__remaining");
+  const total = sectionIds.length;
+  const reviewed = sectionIds.filter((id) => reviewState[id]?.reviewed).length;
   return { reviewed, total, pct: total ? Math.round((reviewed / total) * 100) : 0 };
+}
+
+// ─── File Coverage ───────────────────────────────────
+function getFileCoverage(wt) {
+  // All files in the diff
+  const allFiles = Object.keys(parsedFiles);
+
+  // Files referenced in walkthrough hunks
+  const coveredSet = new Set();
+  if (wt?.sections) {
+    for (const section of wt.sections) {
+      for (const hunk of section.hunks || []) {
+        // Match using the same logic as findFile
+        const found = findFile(hunk.file);
+        if (found) {
+          // Find the actual key in parsedFiles
+          for (const key of allFiles) {
+            if (parsedFiles[key] === found) {
+              coveredSet.add(key);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const covered = allFiles.filter((f) => coveredSet.has(f));
+  const uncovered = allFiles.filter((f) => !coveredSet.has(f));
+
+  // Files with comments that aren't in any walkthrough section
+  const commentedFiles = new Set((data?.comments || []).map((c) => c.path));
+  const orphanedCommentFiles = [...commentedFiles].filter(
+    (f) => !coveredSet.has(f) && !allFiles.some((af) => af === f || af.endsWith(f) || f.endsWith(af))
+  );
+
+  return {
+    total: allFiles.length,
+    covered,
+    uncovered,
+    coveredCount: covered.length,
+    uncoveredCount: uncovered.length,
+    pct: allFiles.length ? Math.round((covered.length / allFiles.length) * 100) : 100,
+    orphanedCommentFiles,
+  };
 }
 
 // ─── Rendering ───────────────────────────────────────
@@ -166,18 +334,25 @@ function render() {
   const { walkthrough: wt, meta } = data;
   const progress = getProgress();
 
+  const coverage = getFileCoverage(wt);
+
   app.innerHTML = `
     <div class="page-container">
       ${renderHeader(wt, meta, progress)}
       ${renderProgressBar(progress)}
+      ${renderCoverageBar(coverage)}
       ${renderToolbar()}
-      ${renderTOC(wt)}
+      ${renderReviewsSummary()}
+      ${renderTOC(wt, coverage)}
       ${renderOverview(wt)}
       ${renderSections(wt)}
+      ${renderRemainingChanges(coverage)}
+      ${renderOrphanedComments(coverage)}
       ${renderFileMap(wt)}
       ${renderFooter(meta)}
     </div>
     ${renderMinimap(wt)}
+    ${renderReviewModal()}
   `;
 
   setupHandlers();
@@ -259,7 +434,23 @@ function renderProgressBar(progress) {
   `;
 }
 
+function renderCoverageBar(coverage) {
+  if (coverage.total === 0) return "";
+  const narrated = coverage.pct;
+  return `
+    <div class="coverage-bar">
+      <div class="coverage-indicator">
+        <span class="coverage-label">${coverage.coveredCount}/${coverage.total} files narrated</span>
+        ${coverage.uncoveredCount > 0 ? `<span class="coverage-remaining">${coverage.uncoveredCount} in Remaining Changes below</span>` : '<span class="coverage-complete">All files covered in walkthrough</span>'}
+      </div>
+    </div>
+  `;
+}
+
 function renderToolbar() {
+  const commentCount = data?.comments?.length || 0;
+  const gh = isGitHubPR();
+
   return `
     <div class="toolbar">
       <div class="toolbar-group">
@@ -271,6 +462,18 @@ function renderToolbar() {
         <button class="btn btn-sm" id="btn-collapse-all">Collapse All</button>
       </div>
       <div class="toolbar-group">
+        <button class="btn btn-sm ${showComments ? "active" : ""}" id="btn-toggle-comments">
+          Comments${commentCount ? ` (${commentCount})` : ""}
+        </button>
+        ${gh ? `<button class="btn btn-sm" id="btn-refresh-comments">↻ Refresh</button>` : ""}
+      </div>
+      ${gh ? `
+      <div class="toolbar-group toolbar-review-actions">
+        <button class="btn btn-sm btn-approve" id="btn-approve">Approve</button>
+        <button class="btn btn-sm btn-request-changes" id="btn-request-changes">Request Changes</button>
+      </div>
+      ` : ""}
+      <div class="toolbar-group">
         <button class="btn btn-sm" id="btn-reset-review">Reset Review</button>
       </div>
       <div class="toolbar-hint">
@@ -280,14 +483,21 @@ function renderToolbar() {
   `;
 }
 
-function renderTOC(wt) {
+function renderTOC(wt, coverage) {
   if (!wt.sections?.length) return "";
-  const items = wt.sections
+  let items = wt.sections
     .map((s) => {
       const reviewed = reviewState[s.id]?.reviewed;
       return `<li class="${reviewed ? "reviewed" : ""}"><a href="#section-${esc(s.id)}">${esc(s.title)}${reviewed ? ' <span class="check">✓</span>' : ""}</a></li>`;
     })
     .join("");
+
+  // Add "Remaining Changes" to TOC if there are uncovered files
+  if (coverage && coverage.uncoveredCount > 0) {
+    const reviewed = reviewState["__remaining"]?.reviewed;
+    items += `<li class="${reviewed ? "reviewed" : ""}"><a href="#section-remaining">Remaining Changes (${coverage.uncoveredCount} files)${reviewed ? ' <span class="check">✓</span>' : ""}</a></li>`;
+  }
+
   return `<nav class="toc"><ol>${items}</ol></nav>`;
 }
 
@@ -448,12 +658,300 @@ function renderGroupedHunks(hunks, sectionId) {
       } else {
         html += `<div class="hunk-diff no-diff">File "${esc(filePath)}" not found in diff</div>`;
       }
+
+      // Show existing comments for this file
+      if (showComments) {
+        html += renderFileComments(filePath);
+      }
+
+      // Comment composer (only for GitHub PRs)
+      if (isGitHubPR()) {
+        html += `
+          <div class="comment-composer" data-file="${esc(filePath)}">
+            <textarea class="comment-textarea" placeholder="Leave a review comment on ${esc(filePath.split('/').pop())}..." rows="2" data-comment-file="${esc(filePath)}"></textarea>
+            <div class="comment-actions">
+              <input type="number" class="comment-line-input" placeholder="Line #" min="1" data-comment-line-for="${esc(filePath)}" />
+              <button class="btn btn-sm" data-post-comment="${esc(filePath)}">Comment</button>
+            </div>
+          </div>
+        `;
+      }
     }
 
     html += `</div>`;
   }
 
   html += "</div>";
+  return html;
+}
+
+function renderFileComments(filePath) {
+  const threads = getCommentThreads(filePath);
+  if (!threads.length) return "";
+
+  let html = '<div class="file-comments">';
+
+  for (const thread of threads) {
+    html += `
+      <div class="comment-thread">
+        <div class="comment">
+          <div class="comment-meta">
+            <span class="comment-author">${esc(thread.user)}</span>
+            ${thread.line ? `<span class="comment-line">Line ${thread.line}</span>` : ""}
+            <span class="comment-time">${timeAgo(thread.createdAt)}</span>
+          </div>
+          <div class="comment-body">${md(thread.body)}</div>
+        </div>
+    `;
+
+    for (const reply of thread.replies) {
+      html += `
+        <div class="comment comment-reply">
+          <div class="comment-meta">
+            <span class="comment-author">${esc(reply.user)}</span>
+            <span class="comment-time">${timeAgo(reply.createdAt)}</span>
+          </div>
+          <div class="comment-body">${md(reply.body)}</div>
+        </div>
+      `;
+    }
+
+    html += `</div>`;
+  }
+
+  html += "</div>";
+  return html;
+}
+
+function renderReviewsSummary() {
+  if (!data?.reviews?.length) return "";
+
+  const reviews = data.reviews.filter((r) => r.state !== "PENDING" && r.state !== "DISMISSED");
+  if (!reviews.length) return "";
+
+  const html = reviews.map((r) => {
+    const stateClass = r.state === "APPROVED" ? "approved" : r.state === "CHANGES_REQUESTED" ? "changes-requested" : "commented";
+    const stateLabel = r.state === "APPROVED" ? "Approved" : r.state === "CHANGES_REQUESTED" ? "Changes requested" : "Commented";
+    return `
+      <div class="review-item review-${stateClass}">
+        <span class="review-author">${esc(r.user)}</span>
+        <span class="review-state">${stateLabel}</span>
+        <span class="review-time">${timeAgo(r.submittedAt)}</span>
+        ${r.body ? `<div class="review-body">${md(r.body)}</div>` : ""}
+      </div>
+    `;
+  }).join("");
+
+  return `<div class="reviews-summary">${html}</div>`;
+}
+
+function renderReviewModal() {
+  return `
+    <div class="review-modal" id="review-modal" style="display:none;">
+      <div class="review-modal-backdrop" data-close-modal></div>
+      <div class="review-modal-content">
+        <h3 id="review-modal-title">Submit Review</h3>
+        <textarea id="review-modal-body" rows="4" placeholder="Leave a comment (optional for approve)..."></textarea>
+        <div class="review-modal-actions">
+          <button class="btn" data-close-modal>Cancel</button>
+          <button class="btn" id="review-modal-submit">Submit</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function timeAgo(dateStr) {
+  if (!dateStr) return "";
+  const date = new Date(dateStr);
+  const now = new Date();
+  const seconds = Math.floor((now - date) / 1000);
+
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return date.toLocaleDateString();
+}
+
+// ─── Remaining Changes (files not in walkthrough) ────
+function renderRemainingChanges(coverage) {
+  if (!coverage || coverage.uncoveredCount === 0) return "";
+
+  const reviewed = reviewState["__remaining"]?.reviewed;
+  const collapsed = collapsedSections.has("__remaining");
+
+  // Group uncovered files by directory to reduce overwhelm
+  const groups = groupFilesByDirectory(coverage.uncovered);
+
+  let html = `
+    <section id="section-remaining" class="review-section remaining-section ${reviewed ? "reviewed" : ""} ${collapsed ? "collapsed" : ""}">
+      <div class="section-header" data-section="__remaining">
+        <div class="section-header-left">
+          <span class="section-number">Remaining Changes</span>
+          <h2>${coverage.uncoveredCount} files not in walkthrough</h2>
+        </div>
+        <div class="section-header-right">
+          <label class="review-checkbox" title="Mark as reviewed">
+            <input type="checkbox" ${reviewed ? "checked" : ""} data-section-review="__remaining" />
+            <span class="review-checkbox-label">${reviewed ? "Reviewed ✓" : "Mark reviewed"}</span>
+          </label>
+          <button class="btn btn-icon collapse-toggle" data-collapse="__remaining" title="${collapsed ? "Expand" : "Collapse"}">
+            ${collapsed ? "▶" : "▼"}
+          </button>
+        </div>
+      </div>
+  `;
+
+  if (!collapsed) {
+    html += `<div class="section-body">`;
+    html += `<div class="narrative"><p>These files were changed in the PR but not featured in the AI walkthrough above. They may be mechanical changes (imports, re-exports, signature updates) or less critical modifications.</p></div>`;
+
+    for (const [dir, files] of groups) {
+      const groupKey = `__remaining:${dir}`;
+      const groupCollapsed = collapsedHunks.has(groupKey);
+      const fileCount = files.length;
+
+      html += `
+        <div class="remaining-group">
+          <div class="remaining-group-header" data-hunk-toggle="${esc(groupKey)}">
+            <span class="hunk-file">${esc(dir || "(root)")}/</span>
+            <span class="hunk-count">${fileCount} file${fileCount > 1 ? "s" : ""}</span>
+            <span class="hunk-toggle-icon">${groupCollapsed ? "▶" : "▼"}</span>
+          </div>
+      `;
+
+      if (!groupCollapsed) {
+        for (const filePath of files) {
+          const file = parsedFiles[filePath];
+          const fileKey = `__remaining:file:${filePath}`;
+          const fileCollapsed = collapsedHunks.has(fileKey);
+          const fileReviewed = reviewState[`file:${filePath}`]?.reviewed;
+          const fileComments = getCommentThreads(filePath);
+          const fileName = filePath.split("/").pop();
+
+          // Compute stats for this file
+          const stats = file ? getFileStats(file) : null;
+
+          html += `
+            <div class="remaining-file ${fileReviewed ? "file-reviewed" : ""}">
+              <div class="remaining-file-header" data-hunk-toggle="${esc(fileKey)}">
+                <label class="file-review-checkbox" onclick="event.stopPropagation()">
+                  <input type="checkbox" ${fileReviewed ? "checked" : ""} data-file-review="${esc(filePath)}" />
+                </label>
+                <span class="remaining-file-name">${esc(fileName)}</span>
+                ${stats ? `<span class="remaining-file-stats">+${stats.additions} −${stats.deletions}</span>` : ""}
+                ${fileComments.length ? `<span class="remaining-file-comments">${fileComments.length} comment${fileComments.length > 1 ? "s" : ""}</span>` : ""}
+                <span class="hunk-toggle-icon">${fileCollapsed ? "▶" : "▼"}</span>
+              </div>
+          `;
+
+          if (!fileCollapsed) {
+            if (file) {
+              html += `<div class="hunk-diff">${renderFileDiff(file, diffViewMode)}</div>`;
+            }
+            if (showComments && fileComments.length) {
+              html += renderFileComments(filePath);
+            }
+            if (isGitHubPR()) {
+              html += `
+                <div class="comment-composer" data-file="${esc(filePath)}">
+                  <textarea class="comment-textarea" placeholder="Comment on ${esc(fileName)}..." rows="2" data-comment-file="${esc(filePath)}"></textarea>
+                  <div class="comment-actions">
+                    <input type="number" class="comment-line-input" placeholder="Line #" min="1" data-comment-line-for="${esc(filePath)}" />
+                    <button class="btn btn-sm" data-post-comment="${esc(filePath)}">Comment</button>
+                  </div>
+                </div>
+              `;
+            }
+          }
+
+          html += `</div>`;
+        }
+      }
+
+      html += `</div>`;
+    }
+
+    html += `</div>`; // section-body
+  }
+
+  html += `</section>`;
+  return html;
+}
+
+function groupFilesByDirectory(filePaths) {
+  const groups = new Map();
+  for (const path of filePaths) {
+    const parts = path.split("/");
+    // Use first 2-3 directory levels as the group key
+    const dir = parts.length > 1 ? parts.slice(0, Math.min(parts.length - 1, 3)).join("/") : "";
+    if (!groups.has(dir)) groups.set(dir, []);
+    groups.get(dir).push(path);
+  }
+  // Sort groups by path
+  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+function getFileStats(file) {
+  let additions = 0;
+  let deletions = 0;
+  for (const block of file.blocks || []) {
+    for (const line of block.lines || []) {
+      if (line.type === "insert") additions++;
+      if (line.type === "delete") deletions++;
+    }
+  }
+  return { additions, deletions };
+}
+
+function renderOrphanedComments(coverage) {
+  // Show comments on files that aren't even in the diff (rare but possible)
+  if (!data?.comments?.length) return "";
+
+  const allDiffFiles = new Set(Object.keys(parsedFiles));
+  const allWalkthroughFiles = new Set();
+  if (data.walkthrough?.sections) {
+    for (const s of data.walkthrough.sections) {
+      for (const h of s.hunks || []) {
+        allWalkthroughFiles.add(h.file);
+      }
+    }
+  }
+
+  // Find comments on files not in the walkthrough AND not in uncovered files
+  const orphaned = data.comments.filter((c) => {
+    const inDiff = [...allDiffFiles].some((f) => f === c.path || f.endsWith(c.path) || c.path.endsWith(f));
+    const inWalkthrough = [...allWalkthroughFiles].some((f) => f === c.path || f.endsWith(c.path) || c.path.endsWith(f));
+    const inUncovered = (coverage?.uncovered || []).some((f) => f === c.path || f.endsWith(c.path) || c.path.endsWith(f));
+    return !inWalkthrough && !inUncovered;
+  });
+
+  if (!orphaned.length) return "";
+
+  // Group by file
+  const byFile = new Map();
+  for (const c of orphaned) {
+    if (!byFile.has(c.path)) byFile.set(c.path, []);
+    byFile.get(c.path).push(c);
+  }
+
+  let html = `
+    <section id="section-orphaned-comments" class="review-section">
+      <span class="section-number">Review Comments</span>
+      <h2>Comments on Other Files</h2>
+      <div class="section-body">
+        <div class="narrative"><p>These review comments reference files not directly shown in the diff above.</p></div>
+  `;
+
+  for (const [filePath, comments] of byFile) {
+    html += `<div class="hunk-group importance-important">`;
+    html += `<div class="hunk-header"><span class="hunk-file">${esc(filePath)}</span><span class="hunk-count">${comments.length} comment${comments.length > 1 ? "s" : ""}</span></div>`;
+    html += renderFileComments(filePath);
+    html += `</div>`;
+  }
+
+  html += `</div></section>`;
   return html;
 }
 
@@ -599,6 +1097,118 @@ function setupHandlers() {
       }
     });
   });
+
+  // Toggle comments visibility
+  document.getElementById("btn-toggle-comments")?.addEventListener("click", () => {
+    showComments = !showComments;
+    render();
+  });
+
+  // Refresh comments from GitHub
+  document.getElementById("btn-refresh-comments")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-refresh-comments");
+    if (btn) btn.textContent = "Refreshing...";
+    await refreshComments();
+  });
+
+  // File-level review checkboxes (for remaining changes)
+  document.querySelectorAll("[data-file-review]").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const filePath = cb.dataset.fileReview;
+      reviewState[`file:${filePath}`] = {
+        reviewed: cb.checked,
+        timestamp: new Date().toISOString(),
+      };
+      saveReviewState();
+      render();
+    });
+  });
+
+  // Post comment buttons
+  document.querySelectorAll("[data-post-comment]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const filePath = btn.dataset.postComment;
+      const textarea = document.querySelector(`[data-comment-file="${filePath}"]`);
+      const lineInput = document.querySelector(`[data-comment-line-for="${filePath}"]`);
+      const body = textarea?.value?.trim();
+      const line = lineInput?.value ? parseInt(lineInput.value) : null;
+
+      if (!body) return;
+
+      btn.textContent = "Posting...";
+      btn.disabled = true;
+
+      try {
+        await postComment(filePath, line || 1, "RIGHT", body);
+        textarea.value = "";
+        if (lineInput) lineInput.value = "";
+        render();
+      } catch (err) {
+        alert("Failed to post comment: " + err.message);
+        btn.textContent = "Comment";
+        btn.disabled = false;
+      }
+    });
+  });
+
+  // Approve button
+  document.getElementById("btn-approve")?.addEventListener("click", () => {
+    openReviewModal("APPROVE", "Approve this PR");
+  });
+
+  // Request changes button
+  document.getElementById("btn-request-changes")?.addEventListener("click", () => {
+    openReviewModal("REQUEST_CHANGES", "Request Changes");
+  });
+
+  // Review modal handlers
+  document.querySelectorAll("[data-close-modal]").forEach((el) => {
+    el.addEventListener("click", () => {
+      document.getElementById("review-modal").style.display = "none";
+    });
+  });
+
+  document.getElementById("review-modal-submit")?.addEventListener("click", async () => {
+    const modal = document.getElementById("review-modal");
+    const body = document.getElementById("review-modal-body")?.value?.trim();
+    const event = modal.dataset.event;
+
+    if (event === "REQUEST_CHANGES" && !body) {
+      alert("Please provide a reason for requesting changes.");
+      return;
+    }
+
+    const submitBtn = document.getElementById("review-modal-submit");
+    if (submitBtn) {
+      submitBtn.textContent = "Submitting...";
+      submitBtn.disabled = true;
+    }
+
+    try {
+      await submitReview(event, body);
+      modal.style.display = "none";
+      render();
+    } catch (err) {
+      alert("Failed to submit review: " + err.message);
+      if (submitBtn) {
+        submitBtn.textContent = "Submit";
+        submitBtn.disabled = false;
+      }
+    }
+  });
+}
+
+function openReviewModal(event, title) {
+  const modal = document.getElementById("review-modal");
+  if (!modal) return;
+  modal.dataset.event = event;
+  document.getElementById("review-modal-title").textContent = title;
+  document.getElementById("review-modal-body").value = "";
+  const submitBtn = document.getElementById("review-modal-submit");
+  submitBtn.textContent = title;
+  submitBtn.disabled = false;
+  submitBtn.className = event === "APPROVE" ? "btn btn-approve" : "btn btn-request-changes";
+  modal.style.display = "flex";
 }
 
 function setupLandingHandlers() {

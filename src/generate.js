@@ -50,8 +50,36 @@ async function fetchPRData(prUrl) {
     { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
   );
 
+  // Fetch existing review comments
+  console.log("Fetching review comments...");
+  let comments = [];
+  try {
+    const commentsJson = execSync(
+      `gh api repos/${owner}/${repo}/pulls/${number}/comments --paginate`,
+      { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
+    );
+    comments = JSON.parse(commentsJson);
+  } catch {
+    console.warn("Could not fetch review comments");
+  }
+
+  // Fetch reviews (approve/request changes/comment)
+  let reviews = [];
+  try {
+    const reviewsJson = execSync(
+      `gh api repos/${owner}/${repo}/pulls/${number}/reviews --paginate`,
+      { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
+    );
+    reviews = JSON.parse(reviewsJson);
+  } catch {
+    console.warn("Could not fetch reviews");
+  }
+
   return {
     source: "github",
+    owner,
+    repo,
+    number: parseInt(number),
     title: pr.title,
     url: prUrl,
     baseBranch: pr.baseRefName,
@@ -62,6 +90,25 @@ async function fetchPRData(prUrl) {
     body: pr.body || "",
     files: pr.files || [],
     diff,
+    comments: comments.map((c) => ({
+      id: c.id,
+      path: c.path,
+      line: c.line || c.original_line,
+      side: c.side || "RIGHT",
+      body: c.body,
+      user: c.user?.login,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      inReplyToId: c.in_reply_to_id || null,
+      diffHunk: c.diff_hunk,
+    })),
+    reviews: reviews.map((r) => ({
+      id: r.id,
+      user: r.user?.login,
+      state: r.state,
+      body: r.body,
+      submittedAt: r.submitted_at,
+    })),
   };
 }
 
@@ -163,6 +210,8 @@ The output must be valid JSON matching this schema:
   "review_tips": ["string - specific things the reviewer should pay attention to"]
 }
 
+IMPORTANT — file_map MUST list EVERY file in the diff. The reviewer needs to see ALL code, not just the interesting parts. The file_map is how we ensure nothing is missed.
+
 Guidelines:
 - Group related changes across files into logical sections. A section might span 2-5 files.
 - Order sections for progressive understanding: start with types/interfaces, then core logic, then wiring, then UI.
@@ -172,7 +221,8 @@ Guidelines:
 - Include mermaid diagrams where they help visualize flow or architecture.
 - Be opinionated about tradeoffs - explain what alternatives existed.
 - Keep annotations concise but insightful. Focus on WHY, not WHAT (the code shows WHAT).
-- If the diff is large, prioritize depth on critical sections over exhaustive coverage of boilerplate.`;
+- You do NOT need to include every file as a hunk in the walkthrough sections — mechanical changes (import updates, signature propagation, re-exports) can be left for the "Remaining Changes" view. But your sections should cover ALL the interesting/critical code.
+- The file_map MUST include every single file that appears in the diff. No exceptions.`;
 
 async function generateWalkthrough(prData) {
   const apiKey = loadEnvKey();
@@ -261,6 +311,9 @@ async function main() {
   const output = {
     meta: {
       source: prData.source,
+      owner: prData.owner || null,
+      repo: prData.repo || null,
+      number: prData.number || null,
       title: prData.title,
       url: prData.url,
       baseBranch: prData.baseBranch,
@@ -272,6 +325,8 @@ async function main() {
     },
     walkthrough,
     diff: prData.diff,
+    comments: prData.comments || [],
+    reviews: prData.reviews || [],
   };
 
   const outPath = resolve(__dirname, "..", "public", "walkthrough-data.json");
