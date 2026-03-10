@@ -20,7 +20,7 @@ No tool exists that combines AI-generated narrative walkthroughs with actual cod
 ### Known Gaps (from this session)
 1. ~~NOT ALL CODE IS SHOWN~~ — **FIXED**: Added Remaining Changes section + coverage bar
 2. ~~Comments on files not in walkthrough sections are invisible~~ — **FIXED**: Visible in remaining section
-3. Full file diffs shown per hunk (no line-range filtering) — makes diffs very tall
+3. ~~Full file diffs shown per hunk~~ — **FIXED**: `filterFileToRanges()` filters diff2html blocks to referenced lines, toggle for full view
 4. Full re-render on every interaction (no incremental DOM updates)
 5. `md()` function double-escapes HTML entities in code blocks
 6. No visual indicator of "current section" for keyboard navigation
