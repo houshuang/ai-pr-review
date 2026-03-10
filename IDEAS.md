@@ -19,7 +19,11 @@ The reviewer MUST see every line of changed code. This is non-negotiable — thi
 - **Importance tiers**: critical (must read carefully), important (should read), supporting (skim), bulk (verify pattern). The AI should classify.
 - **Tracking which code the reviewer has actually seen** — not just "marked section as reviewed" but ideally tracking scroll/visibility
 - [DONE] Basic hunk grouping by file within sections
-- The AI prompt should explicitly require that ALL files appear in sections or file_map with hunks
+- [DONE] Remaining Changes section for files not in walkthrough narrative
+- [DONE] Coverage bar showing narrated vs remaining file counts
+- [DONE] File-level review checkboxes in remaining section
+- [DONE] Files collapsed by default in remaining section
+- [DONE] The AI prompt explicitly requires ALL files in file_map
 
 ## Narrative Structure
 
@@ -36,6 +40,7 @@ The reviewer MUST see every line of changed code. This is non-negotiable — thi
 - [DONE] diff2html rendering with syntax highlighting
 - [DONE] Grouped by file within sections (no duplicate file diffs)
 - [DONE] Collapsible file diffs
+- Hunk-level diff filtering — show only relevant line ranges per hunk, not entire file
 - Expand context up/down (fetch full file from GitHub API, merge extra lines)
 - Line-level annotations from the AI (not just file-level)
 - Click on function/type names to jump to definition (would need tree-sitter or LSP)
@@ -64,7 +69,7 @@ The reviewer MUST see every line of changed code. This is non-negotiable — thi
 - Link back to specific lines in GitHub's diff viewer
 - Resolve/unresolve comment threads
 - Show PR description and linked issues
-- Comments on files NOT in the walkthrough sections should still be visible (orphaned comments section)
+- [DONE] Comments on files NOT in the walkthrough sections visible in Remaining Changes section
 
 ## UI / UX
 

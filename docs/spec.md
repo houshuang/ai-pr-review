@@ -142,8 +142,8 @@ Matches the pr-walkthrough skill: editorial / technical paper style.
 - Comment composer, approve/request changes modal
 
 ### Critical Gaps
-1. **Not all code is shown** — AI covers ~60-70% of files. Remaining are invisible.
-2. Comments on files not in walkthrough sections are invisible
-3. No line-range filtering for diffs (shows full file per hunk)
+1. ~~Not all code is shown~~ — **FIXED**: Remaining Changes section shows all uncovered files
+2. ~~Comments on files not in walkthrough sections are invisible~~ — **FIXED**: Comments visible in remaining section
+3. **No line-range filtering for diffs** (shows full file per hunk, making sections very tall)
 4. Full DOM re-render on every interaction
 5. No streaming generation / in-browser generation
