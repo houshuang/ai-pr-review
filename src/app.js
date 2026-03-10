@@ -157,12 +157,33 @@ function filterFileToRanges(file, ranges) {
 }
 
 // ─── File Content (for expanding context) ────────────
+let _headSha = null;
+
+async function getHeadSha() {
+  if (_headSha) return _headSha;
+  if (data?.meta?.headSha) {
+    _headSha = data.meta.headSha;
+    return _headSha;
+  }
+  if (!isGitHubPR()) return null;
+  const { owner, repo, number } = data.meta;
+  try {
+    const pr = await ghApi("GET", `repos/${owner}/${repo}/pulls/${number}`);
+    _headSha = pr.head?.sha;
+    return _headSha;
+  } catch {
+    return data.meta.headBranch;
+  }
+}
+
 async function fetchFileContent(filePath) {
   if (fileContentCache.has(filePath)) return fileContentCache.get(filePath);
   if (!isGitHubPR()) return null;
-  const { owner, repo, headBranch } = data.meta;
+  const { owner, repo } = data.meta;
+  const ref = await getHeadSha();
+  if (!ref) return null;
   try {
-    const result = await ghApi("GET", `repos/${owner}/${repo}/contents/${filePath}`, { ref: headBranch });
+    const result = await ghApi("GET", `repos/${owner}/${repo}/contents/${filePath}`, { ref });
     const base64 = (result.content || "").replace(/\n/g, "");
     const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
     const content = new TextDecoder().decode(bytes);
@@ -1360,8 +1381,8 @@ function renderGroupedHunks(hunks, sectionId) {
         html += renderFileComments(filePath);
       }
 
-      // Comment composer (only for GitHub PRs)
-      if (isGitHubPR()) {
+      // Comment composer (only for GitHub PRs, hidden when comments off)
+      if (isGitHubPR() && showComments) {
         html += `
           <div class="comment-composer" data-file="${esc(filePath)}">
             <textarea class="comment-textarea" placeholder="Leave a review comment on ${esc(filePath.split('/').pop())}..." rows="2" data-comment-file="${esc(filePath)}"></textarea>
@@ -1557,7 +1578,7 @@ function renderRemainingChanges(coverage) {
             if (showComments && fileComments.length) {
               html += renderFileComments(filePath);
             }
-            if (isGitHubPR()) {
+            if (isGitHubPR() && showComments) {
               html += `
                 <div class="comment-composer" data-file="${esc(filePath)}">
                   <textarea class="comment-textarea" placeholder="Comment on ${esc(fileName)}..." rows="2" data-comment-file="${esc(filePath)}"></textarea>

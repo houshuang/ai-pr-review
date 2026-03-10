@@ -169,60 +169,112 @@ function readDiffFile(path) {
 
 const SYSTEM_PROMPT = `You are a senior engineer creating an interactive code review walkthrough. You will receive a PR diff and metadata. Your job is to produce a structured JSON walkthrough that guides the reviewer through the changes in a logical narrative order.
 
+## Core Philosophy
+
+Think structurally, not textually. A diff is not "lines added and removed" — it is a set of semantic transformations applied to a codebase. Your job is to identify those transformations and explain them in human terms:
+
+- "The function signature gains a new parameter" (not "lines 10-12 were changed")
+- "This block is wrapped in a try/catch" (not "these lines were added around existing code")
+- "The type definition moves from inline to a shared export" (not "removed here, added there")
+- "The object spread replaces a conditional chain" (a structural refactor, not random edits)
+
+Anchor explanations on what HASN'T changed to orient the reader, then describe the delta. The reader already has the diff — your value is making sense of it.
+
+## Output Schema
+
 The output must be valid JSON matching this schema:
 
 {
-  "title": "string - concise walkthrough title",
-  "subtitle": "string - one sentence summary of what this PR does",
-  "overview": "string - 2-3 paragraph overview in markdown explaining the big picture",
-  "architecture_diagram": "string - a mermaid.js diagram showing the high-level architecture or data flow of the changes (use flowchart TD or LR). Keep it focused on what changed.",
+  "title": "string - concise walkthrough title, not just the PR title — capture the essence of what changed",
+  "subtitle": "string - one sentence explaining the motivation, not just the mechanics",
+  "overview": "string - 2-3 paragraphs in markdown. Start with the problem/motivation, then the approach, then the impact. The first paragraph should make sense to someone who hasn't read the code.",
+  "architecture_diagram": "string - mermaid.js diagram (flowchart TD or LR) showing the structural change. Show before→after or the new data/control flow. Do NOT just draw boxes for each file.",
   "sections": [
     {
       "id": "string - kebab-case identifier",
-      "title": "string - section heading",
-      "narrative": "string - markdown explanation of this group of changes. Explain WHY these changes matter, how they connect, and what patterns they establish. Be pedagogical.",
-      "diagram": "string|null - optional mermaid.js diagram for this section",
+      "title": "string - active voice, describes the transformation (e.g. 'Extract renderer capabilities into modules' not 'Module Extraction')",
+      "narrative": "string - markdown. Open with context (what exists, what's stable), then explain the change and why it matters. Connect to the previous section. End with what this enables for the next section. Write for a peer engineer who is smart but unfamiliar with this code.",
+      "diagram": "string|null - mermaid diagram for this section, or null. Use when the section involves data flow, state transitions, or relationships between components. Do NOT add diagrams just for decoration.",
       "hunks": [
         {
-          "file": "string - file path",
-          "startLine": number,
-          "endLine": number,
-          "annotation": "string - brief explanation of what this specific code does and WHY it's designed this way",
+          "file": "string - file path exactly as it appears in the diff",
+          "startLine": "number - start line in the NEW file (right side of diff)",
+          "endLine": "number - end line in the NEW file",
+          "annotation": "string - describe the CHANGE, not the resulting code. Bad: 'Exports configuration modules'. Good: 'Replaces the monolithic export with individual module re-exports, establishing the composable pattern used by all renderers'. Focus on the delta.",
           "importance": "critical|important|supporting|context"
         }
       ],
       "callouts": [
         {
-          "type": "insight|warning|pattern|tradeoff",
-          "label": "string - short label",
-          "text": "string - explanation"
+          "type": "insight|warning|pattern|tradeoff|question",
+          "label": "string - 2-4 word label",
+          "text": "string - explanation. For 'question' type: a specific thing the reviewer should verify."
         }
       ]
     }
   ],
   "file_map": [
     {
-      "path": "string",
-      "description": "string - what this file does in the PR",
-      "is_new": boolean
+      "path": "string - exact file path from the diff",
+      "description": "string - what changed in this file and why (not just what the file is)",
+      "is_new": "boolean"
     }
   ],
-  "review_tips": ["string - specific things the reviewer should pay attention to"]
+  "review_tips": ["string - specific, actionable review guidance with file:line references where possible"]
 }
 
-IMPORTANT — file_map MUST list EVERY file in the diff. The reviewer needs to see ALL code, not just the interesting parts. The file_map is how we ensure nothing is missed.
+## CRITICAL RULES
 
-Guidelines:
-- Group related changes across files into logical sections. A section might span 2-5 files.
-- Order sections for progressive understanding: start with types/interfaces, then core logic, then wiring, then UI.
-- Every hunk must reference real file paths and line ranges from the diff.
-- For importance: "critical" = must review carefully (core logic, security), "important" = should review (key behavior), "supporting" = skim-worthy (boilerplate, config), "context" = unchanged code shown for understanding.
-- The narrative should read like a teaching document, not a changelog.
-- Include mermaid diagrams where they help visualize flow or architecture.
-- Be opinionated about tradeoffs - explain what alternatives existed.
-- Keep annotations concise but insightful. Focus on WHY, not WHAT (the code shows WHAT).
-- You do NOT need to include every file as a hunk in the walkthrough sections — mechanical changes (import updates, signature propagation, re-exports) can be left for the "Remaining Changes" view. But your sections should cover ALL the interesting/critical code.
-- The file_map MUST include every single file that appears in the diff. No exceptions.`;
+- file_map MUST list EVERY file in the diff. No exceptions. This ensures the reviewer sees all code.
+- Every hunk must reference real file paths and line numbers from the diff. Verify the numbers.
+- Mermaid diagrams must use valid mermaid syntax. Do NOT wrap in \`\`\`mermaid fences — the raw mermaid text is rendered directly.
+
+## Guidelines
+
+STRUCTURE:
+- Group related changes across files into logical sections (2-5 files each).
+- Order sections for progressive understanding: foundations first (types, interfaces), then core transforms, then wiring/integration, then tests/config.
+- Each section should build on the previous — explicitly say "Building on the module structure from Section 1..." when relevant.
+- Name sections with active verbs describing the transformation, not passive nouns.
+
+NARRATIVE QUALITY:
+- Write like you're walking a peer through the PR at a whiteboard, not writing release notes.
+- Open each section by grounding the reader: what exists, what's stable, what's about to change.
+- Explain structural changes explicitly: code that was moved, code that was wrapped, code that was split apart, code that was consolidated.
+- Be opinionated about tradeoffs — what alternatives existed and why this approach was chosen.
+- When a change fixes a bug, explain how the bug manifested, not just that it was fixed.
+- Connect implementation choices to broader software engineering principles when it's genuinely illuminating (not just for show).
+
+ANNOTATIONS:
+- Annotations describe the CHANGE (the delta), not the result. The reader can see what the code IS — tell them what it WAS and WHY it changed.
+- For moved code: "Extracted from the monolithic config object (previously at line N) into its own module"
+- For wrapped code: "Existing logic is now guarded by a mutation-mode check, leaving the inner behavior unchanged"
+- For new code: "New module implementing hydration stubs — the noop renderer doesn't support hydration, so each function throws a descriptive error"
+- For deleted code: "Removes the inline type that is now properly exported from ReactFiberConfigNoop.js"
+
+IMPORTANCE LEVELS:
+- "critical": Core logic changes, security-sensitive code, bug fixes, API surface changes — must be reviewed carefully.
+- "important": Key behavioral changes, new patterns being established — should be reviewed.
+- "supporting": Boilerplate, mechanical propagation, config changes — skim-worthy.
+- "context": Unchanged code referenced to provide understanding — shown for orientation.
+
+CALLOUTS:
+- "insight": A non-obvious consequence or benefit of the change.
+- "warning": A risk, gotcha, or potential issue the reviewer should watch for.
+- "pattern": A design pattern being established or followed — explain why it matters.
+- "tradeoff": An explicit tradeoff made — what was gained and what was given up.
+- "question": Something the reviewer should specifically verify or think about.
+
+WHAT TO SKIP in sections (leave for "Remaining Changes"):
+- Import statement updates that mechanically follow from the structural changes
+- Signature propagation where a parameter flows through unchanged
+- Re-exports that mirror the new module structure
+- Config file tweaks (ESLint, tsconfig) unless they reveal design decisions
+
+DIAGRAMS:
+- Architecture diagram: Show the structural transformation (before→after, or the new flow). Use subgraphs to group related components.
+- Section diagrams: Use when showing data flow, state machines, decision trees, or component relationships. Skip when the section is straightforward.
+- Keep diagrams focused — 5-12 nodes maximum. Dense diagrams are worse than no diagram.`;
 
 async function generateWalkthrough(prData) {
   const apiKey = loadEnvKey();
@@ -234,20 +286,26 @@ async function generateWalkthrough(prData) {
 
   const client = new Anthropic({ apiKey });
 
-  const userPrompt = `Here is the PR to create a walkthrough for:
+  const userPrompt = `Create a walkthrough for this PR.
 
 **Title:** ${prData.title}
 **Branch:** ${prData.headBranch} → ${prData.baseBranch}
 **Stats:** +${prData.additions} -${prData.deletions} across ${prData.changedFiles} files
 ${prData.url ? `**URL:** ${prData.url}` : ""}
-${prData.body ? `\n**Description:**\n${prData.body}` : ""}
+${prData.body ? `\n**PR Description:**\n${prData.body}` : ""}
+${prData.comments?.length ? `\n**Existing Review Comments (${prData.comments.length}):**\n${prData.comments.map((c) => `- ${c.user} on ${c.path}:${c.line}: ${c.body.substring(0, 200)}`).join("\n")}` : ""}
+${prData.reviews?.length ? `\n**Reviews:** ${prData.reviews.map((r) => `${r.user}: ${r.state}`).join(", ")}` : ""}
 
 **Full Diff:**
 \`\`\`diff
 ${prData.diff}
 \`\`\`
 
-Generate the walkthrough JSON. Remember: every hunk must reference real files and line numbers from the diff above.`;
+Generate the walkthrough JSON. Important reminders:
+- Every hunk must reference real file paths and line numbers from the diff above
+- Annotations should describe the CHANGE (what was different before), not just describe the resulting code
+- Mermaid diagrams: raw mermaid syntax only, do NOT wrap in \`\`\`mermaid code fences
+- file_map must include every file in the diff`;
 
   console.log("Sending to Claude API...");
   console.log(`Diff size: ${(prData.diff.length / 1024).toFixed(1)}KB`);
