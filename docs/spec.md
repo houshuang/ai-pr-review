@@ -23,18 +23,17 @@ An AI-narrated interactive code review tool. Takes a PR diff, uses Claude to gen
 ```
 ┌─────────────────────────────────────────────────┐
 │  CLI Generator (src/generate.js)                │
-│  - Fetches PR data via gh CLI                   │
-│  - Sends diff to Claude API                     │
+│  - Fetches PR data + git history via gh CLI     │
+│  - Sends diff + commit/churn/age data to Claude │
 │  - Outputs structured JSON                      │
 └──────────────────────┬──────────────────────────┘
                        │ walkthrough-data.json
 ┌──────────────────────▼──────────────────────────┐
 │  Vite SPA (src/app.js + src/styles.css)         │
-│  - Renders walkthrough with editorial aesthetic  │
-│  - Interactive: collapse, diff modes, review     │
-│  - diff2html for code rendering                  │
+│  - 6 switchable view layouts + dark mode        │
+│  - diff2html for code rendering (filtered hunks)│
 │  - Mermaid for diagrams                          │
-│  - localStorage for review state                 │
+│  - localStorage for review + view state          │
 └──────────────────────┬──────────────────────────┘
                        │ /api/gh proxy
 ┌──────────────────────▼──────────────────────────┐
@@ -77,7 +76,7 @@ interface Hunk {
 }
 
 interface Callout {
-  type: 'insight' | 'warning' | 'pattern' | 'tradeoff';
+  type: 'insight' | 'warning' | 'pattern' | 'tradeoff' | 'question';
   label: string;
   text: string;
 }
@@ -120,30 +119,64 @@ Matches the pr-walkthrough skill: editorial / technical paper style.
 | Key | Action |
 |---|---|
 | j / k | Navigate to next/previous section |
+| n | Jump to next unreviewed section |
 | r | Toggle review on current section |
 | e | Expand/collapse current section |
-| n | Jump to next unreviewed section (planned) |
-| ? | Show keyboard shortcuts (planned) |
-
 ## GitHub Integration
 
-- Read: PR metadata, diff, review comments, reviews, CI status (planned)
+- Read: PR metadata, diff, review comments, reviews, commit history, file ages/churn
 - Write: Post comments on specific lines, submit reviews (approve/request changes/comment)
 - Auth: Proxied through local `gh` CLI (no token management needed)
 
-## Current State (2026-03-10)
+## Generation Prompt Philosophy
+
+The system prompt follows a structural change philosophy inspired by difftastic:
+
+- **Think structurally, not textually** — describe semantic transformations, not line changes
+- **Anchor on what hasn't changed** — orient the reader in stable context before describing the delta
+- **Active verb section titles** — "Extract renderer capabilities" not "Module Extraction"
+- **Delta-focused annotations** — describe what changed, not what the code is now
+- **Progressive section flow** — each section builds on the previous with explicit connections
+- **Git history awareness** — commit sequence, file churn, and code age inform the narrative
+
+## View Layouts
+
+| Layout | Description |
+|---|---|
+| Editorial | Default. Full-width linear scroll with TOC, minimap, progress bar |
+| Sidebar | Fixed left panel with TOC + file tree, scrollable main area |
+| Focus | One section at a time with step dots and prev/next navigation |
+| Split | Narrative left pane, code diffs right pane (synchronized) |
+| Developer | Monospace, compact, dark mode forced |
+| Dashboard | Grid of section cards for quick overview, click to drill in |
+
+## Current State (2026-03-11)
 
 ### Working
 - CLI generation from GitHub PRs, local diffs, patch files
+- Git history enrichment: commit details, file churn detection, code age
+- Difftastic-inspired structural prompt: delta-focused annotations, "what hasn't changed" anchoring
 - Interactive viewer with full editorial aesthetic
+- 6 view layouts: Editorial, Sidebar, Focus, Split, Developer, Dashboard
 - Split/unified diff, collapse/expand, review checkboxes
 - Mermaid diagrams, callouts, importance badges
 - GitHub comment display, review summary
 - Comment composer, approve/request changes modal
+- Dark mode toggle
+- Expand context up/down (fetch full file from GitHub API)
+- Ctrl/Cmd+click jump to definition (regex-based across diff)
+- Line selection for commenting
+- Auto-collapse supporting/context hunks (progressive disclosure)
+- Estimated read time per section in TOC
+- Comment count per section in TOC
+- File count in section headers
+- Review complete banner when all sections checked
+- Remaining files sorted by size descending
+- Reviewer names from PR metadata in header
+- Collapsed/expanded state persisted in localStorage
+- Keyboard shortcuts: j/k navigate, n next unreviewed, r review, e expand, ? help
 
-### Critical Gaps
-1. ~~Not all code is shown~~ — **FIXED**: Remaining Changes section shows all uncovered files
-2. ~~Comments on files not in walkthrough sections are invisible~~ — **FIXED**: Comments visible in remaining section
-3. ~~No line-range filtering for diffs~~ — **FIXED**: Diffs filtered to referenced line ranges with "show all" toggle
-4. Full DOM re-render on every interaction
-5. No streaming generation / in-browser generation
+### Remaining Gaps
+1. Full DOM re-render on every interaction (no virtual DOM / incremental updates)
+2. No streaming generation / in-browser generation
+3. No interdiff support (show what changed between force-pushes)
