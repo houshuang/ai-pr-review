@@ -29,7 +29,8 @@ An AI-narrated interactive code review tool. Takes a PR diff, uses Claude to gen
 └──────────────────────┬──────────────────────────┘
                        │ walkthrough-data.json
 ┌──────────────────────▼──────────────────────────┐
-│  Vite SPA (src/app.js + src/styles.css)         │
+│  Preact SPA (src/app.jsx)                       │
+│  - Preact + @preact/signals for reactive state  │
 │  - 6 switchable view layouts + dark mode        │
 │  - diff2html for code rendering (filtered hunks)│
 │  - Mermaid for diagrams                          │
@@ -38,9 +39,41 @@ An AI-narrated interactive code review tool. Takes a PR diff, uses Claude to gen
                        │ /api/gh proxy
 ┌──────────────────────▼──────────────────────────┐
 │  Vite Middleware (vite.config.js)                │
+│  - @preact/preset-vite for JSX                  │
 │  - Proxies GitHub API calls through gh CLI      │
 │  - Enables comment posting, review submission   │
 └─────────────────────────────────────────────────┘
+```
+
+### Frontend Module Structure
+
+```
+src/
+  app.jsx                  — Entry point: renders <App /> into #app
+  state.js                 — Preact signals for all app state + derived state
+  utils.js                 — esc(), md(), timeAgo(), groupFilesByDirectory(), getFileStats()
+  diff.js                  — parseDiff(), renderFileDiff(), filterFileToRanges(), diff2html wrappers
+  api.js                   — GitHub API: comments, reviews, file content, expand context
+  keyboard.js              — getActionItems() for keyboard shortcuts + action panel
+  mermaid.js               — Mermaid diagram loading + useMermaid() hook
+  styles.css               — All styles (unchanged from pre-Preact)
+  components/
+    App.jsx                — Root: auto-loads data, keyboard handler, layout router
+    Landing.jsx            — Landing page (PR URL input, file load, demo)
+    Section.jsx            — Walkthrough section with narrative, callouts, diffs
+    HunkGroup.jsx          — File diff block: header, DiffView, comments, composer
+    DiffView.jsx           — diff2html output via dangerouslySetInnerHTML
+    RemainingChanges.jsx   — Uncovered files grouped by directory
+    Header.jsx, Footer.jsx, TOC.jsx, Overview.jsx, Minimap.jsx, etc.
+    BottomBar.jsx          — Status bar with progress, diff toggle, actions
+    ActionPanel.jsx        — Command palette (. key)
+    ReviewModal.jsx        — Approve/request changes modal
+    layouts/
+      EditorialLayout.jsx  — Default linear scroll layout
+      SidebarLayout.jsx    — Fixed sidebar + scrollable main
+      FocusLayout.jsx      — One section at a time with stepper
+      SplitLayout.jsx      — Narrative left, code right
+      DashboardLayout.jsx  — Card grid overview
 ```
 
 ## Walkthrough JSON Schema
@@ -82,6 +115,39 @@ interface Callout {
 }
 ```
 
+### Output JSON (walkthrough-data.json)
+
+The generator bundles the walkthrough with raw data and metadata:
+
+```typescript
+interface WalkthroughData {
+  meta: { source, owner, repo, number, title, url, baseBranch, headBranch, additions, deletions, changedFiles, generatedAt };
+  walkthrough: Walkthrough;
+  diff: string;
+  comments: Comment[];      // GitHub review comments
+  reviews: Review[];        // GitHub review states
+  gitHistory: GitHistory;   // Git history metadata
+}
+
+interface GitHistory {
+  commits: Array<{
+    sha: string;            // short (7 char)
+    fullSha: string;
+    author: string;
+    date: string;
+    message: string;        // first line only
+  }>;
+  fileAges: Record<string, {
+    lastModified: string;   // ISO date
+    lastAuthor: string;
+    daysSince: number;
+  }>;
+  churn: Record<string, {
+    touchCount: number;     // how many PR commits touched this file
+  }>;
+}
+```
+
 ## Complete Code Coverage Requirement
 
 **Every file in the diff MUST appear in the walkthrough.** The AI should:
@@ -110,23 +176,39 @@ The viewer should:
 
 Matches the pr-walkthrough skill: editorial / technical paper style.
 
-- **Fonts**: Instrument Serif (headings), Source Serif 4 (body), DM Mono (code)
-- **Colors**: Warm paper (#f5f0e8), ink (#1a1a18), accent red (#c23616), semantic blue/green/purple/orange
+- **Fonts**: Instrument Serif (headings), Inter (body), JetBrains Mono (code)
+- **Diff colors**: GitHub-inspired — green `#c8f0ce` (additions), red `#ffebe9` (deletions), inline highlights `#a8e6b0` / `#ffd7d5`
 - **Feel**: Stripe engineering blog or well-written RFC
+- **Width**: 1400px max-width for wide diffs
 
 ## Keyboard Shortcuts
 
+All shortcuts are accessible via the `.` (period) key action panel, which slides up from the bottom bar. Single-letter shortcuts work both when the panel is open and directly from the keyboard.
+
 | Key | Action |
 |---|---|
+| . | Toggle action panel |
 | j / k | Navigate to next/previous section |
 | n | Jump to next unreviewed section |
 | r | Toggle review on current section |
-| e | Expand/collapse current section |
+| e | Expand all sections |
+| w | Collapse all sections |
+| s / u | Switch to split / unified diff |
+| d | Toggle dark mode |
+| c | Toggle GitHub comments |
+| h | Hide reviewed sections |
+| g | Open PR on GitHub (new tab) |
+| a | Approve PR |
+| x | Request changes |
+| f | Refresh comments from GitHub |
+| 1-6 | Switch view layout |
+| ? | Show shortcuts help |
 ## GitHub Integration
 
-- Read: PR metadata, diff, review comments, reviews, commit history, file ages/churn
-- Write: Post comments on specific lines, submit reviews (approve/request changes/comment)
-- Auth: Proxied through local `gh` CLI (no token management needed)
+- **Read**: PR metadata, diff, review comments, reviews, commit history, file ages/churn
+- **Write**: Post comments on specific lines or line ranges (`start_line`/`line` API), submit reviews (approve/request changes/comment)
+- **Auth**: Proxied through local `gh` CLI (no token management needed)
+- **Commenting flow**: Click a line number → auto-fills composer. Shift+click for range. Side selector (new/old code). Posts immediately to GitHub.
 
 ## Generation Prompt Philosophy
 
@@ -156,16 +238,20 @@ The system prompt follows a structural change philosophy inspired by difftastic:
 - CLI generation from GitHub PRs, local diffs, patch files
 - Git history enrichment: commit details, file churn detection, code age
 - Difftastic-inspired structural prompt: delta-focused annotations, "what hasn't changed" anchoring
-- Interactive viewer with full editorial aesthetic
+- **Preact + signals frontend** — reactive component architecture replacing vanilla innerHTML
 - 6 view layouts: Editorial, Sidebar, Focus, Split, Developer, Dashboard
-- Split/unified diff, collapse/expand, review checkboxes
+- Split/unified diff, collapse/expand, review checkboxes (top + bottom of sections)
+- Mark reviewed auto-collapses section and scrolls to header
 - Mermaid diagrams, callouts, importance badges
-- GitHub comment display, review summary
+- GitHub comment display with syntax-highlighted code blocks (highlight.js)
 - Comment composer, approve/request changes modal
 - Dark mode toggle
 - Expand context up/down (fetch full file from GitHub API)
 - Ctrl/Cmd+click jump to definition (regex-based across diff)
-- Line selection for commenting
+- Line range selection for commenting (click + shift-click, multi-line range sync to GitHub)
+- Commit timeline in header (collapsible, shows PR commit sequence)
+- File age badges on hunk headers (last modified date, color-coded by age)
+- File churn badges showing iteration count (files revised multiple times)
 - Auto-collapse supporting/context hunks (progressive disclosure)
 - Estimated read time per section in TOC
 - Comment count per section in TOC
@@ -174,9 +260,13 @@ The system prompt follows a structural change philosophy inspired by difftastic:
 - Remaining files sorted by size descending
 - Reviewer names from PR metadata in header
 - Collapsed/expanded state persisted in localStorage
-- Keyboard shortcuts: j/k navigate, n next unreviewed, r review, e expand, ? help
+- Bottom action panel (`.` key) with full keyboard shortcuts (single-letter)
+- GitHub-inspired diff colors (strong green/red, word-level highlight merging)
+- Word wrap in unified diff view (split view preserves horizontal scroll)
+- Hunk-level diff filtering: only shows referenced line ranges, not full file diffs
+- Interleaved annotations: each annotation appears above its matching diff hunk
+- "Open PR on GitHub" action for quick navigation to the source PR
 
 ### Remaining Gaps
-1. Full DOM re-render on every interaction (no virtual DOM / incremental updates)
-2. No streaming generation / in-browser generation
-3. No interdiff support (show what changed between force-pushes)
+1. No streaming generation / in-browser generation
+2. No interdiff support (show what changed between force-pushes)

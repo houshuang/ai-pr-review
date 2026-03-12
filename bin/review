@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -e
+
+# Resolve the project root (works even if symlinked)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REVIEW_TOOL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PORT="${REVIEW_PORT:-5200}"
+
+usage() {
+  echo "Usage: review <github-pr-url>"
+  echo "       review https://github.com/owner/repo/pull/123"
+  echo "       review --local [base-branch]"
+  echo "       review --diff path/to/diff.patch"
+  echo ""
+  echo "Environment:"
+  echo "  ANTHROPIC_API_KEY   Required. Your Anthropic API key."
+  echo "  REVIEW_PORT         Dev server port (default: 5200)"
+}
+
+if [ -z "$1" ]; then
+  usage
+  exit 1
+fi
+
+cd "$REVIEW_TOOL_DIR"
+
+echo "Generating walkthrough..."
+output=$(node src/generate.js "$@" 2>&1)
+echo "$output"
+
+# Extract the slug from generator output
+slug=$(echo "$output" | grep "^Slug: " | sed 's/^Slug: //')
+if [ -z "$slug" ]; then
+  slug="walkthrough-data"
+fi
+
+url="http://localhost:${PORT}/?pr=${slug}"
+
+# Check if the dev server is already running
+if command -v lsof >/dev/null 2>&1 && lsof -ti:$PORT >/dev/null 2>&1; then
+  echo ""
+  echo "Dev server already running. Opening: $url"
+elif command -v ss >/dev/null 2>&1 && ss -tln "sport = :$PORT" | grep -q LISTEN; then
+  echo ""
+  echo "Dev server already running. Opening: $url"
+else
+  echo ""
+  echo "Starting dev server..."
+  npx vite --port $PORT &
+  VITE_PID=$!
+  sleep 2
+  echo "Review tool running at $url (PID: $VITE_PID)"
+fi
+
+# Open browser (cross-platform)
+if command -v open >/dev/null 2>&1; then
+  open "$url"
+elif command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$url"
+elif command -v wslview >/dev/null 2>&1; then
+  wslview "$url"
+else
+  echo "Open in your browser: $url"
+fi
+
+# If we started the server, wait for it
+if [ -n "$VITE_PID" ]; then
+  echo "Press Ctrl+C to stop the server."
+  wait $VITE_PID
+fi

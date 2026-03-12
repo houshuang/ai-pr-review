@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import preact from '@preact/preset-vite';
 import { execSync } from 'child_process';
 
 // Middleware to proxy GitHub API calls through `gh` CLI
@@ -69,5 +70,5 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
-  plugins: [ghApiProxy()],
+  plugins: [preact(), ghApiProxy()],
 });

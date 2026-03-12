@@ -1,22 +1,31 @@
 {
-  "name": "review-tool",
+  "name": "ai-pr-review-tool",
   "version": "0.1.0",
-  "private": true,
+  "description": "AI-powered interactive PR walkthrough generator and reviewer",
   "type": "module",
+  "bin": {
+    "review": "./bin/review"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "generate": "node src/generate.js"
+    "generate": "node src/generate.js",
+    "review": "./bin/review"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@preact/signals": "^2.8.2",
     "diff2html": "^3.4.48",
-    "@anthropic-ai/sdk": "^0.39.0"
+    "preact": "^10.29.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "devDependencies": {
+    "@preact/preset-vite": "^2.10.3",
     "vite": "^6.3.5"
   }
 }

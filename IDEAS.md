@@ -59,7 +59,8 @@ The reviewer MUST see every line of changed code. This is non-negotiable — thi
 
 - [DONE] Fetch existing review comments and display inline
 - [DONE] Reviews summary (approved/changes requested/commented)
-- [DONE] Comment composer per file
+- [DONE] Comment composer per file with line range selection (click + shift-click on diff lines)
+- [DONE] Multi-line range comments synced to GitHub (start_line/line API)
 - [DONE] Approve / Request Changes buttons with modal
 - [DONE] Refresh comments from GitHub
 - [DONE] Vite middleware proxying gh CLI for API calls
@@ -74,16 +75,26 @@ The reviewer MUST see every line of changed code. This is non-negotiable — thi
 ## UI / UX
 
 - [DONE] pr-walkthrough aesthetic (warm paper, editorial typography)
-- [DONE] Keyboard shortcuts (j/k navigate, r review, e expand/collapse)
+- [DONE] Keyboard shortcuts (j/k navigate, r review, e expand/collapse, n next unreviewed, ? help)
 - [DONE] Mermaid diagrams for architecture/flow
 - [DONE] Importance badges (critical/important/supporting/context)
-- [DONE] TOC with review state
+- [DONE] TOC with review state, estimated read time per section, comment counts
+- [DONE] Auto-collapse supporting/context hunks (progressive disclosure)
+- [DONE] File count shown in section headers ("Section 01 · 3 files")
+- [DONE] Review complete banner with Approve/Request Changes when all sections checked
+- [DONE] Remaining files sorted by size (lines changed) descending
+- [DONE] Reviewer names from PR metadata shown in header
+- [DONE] Collapsed/expanded state persisted in localStorage
+- [DONE] Multiple view layouts: Editorial, Sidebar, Focus, Split, Developer, Dashboard
+- [DONE] Dark mode
 - Pages/panes for large PRs — don't show everything at once
-  - Maybe a left sidebar with file tree + section nav
-  - Or a "focus mode" that shows one section at a time
+  - [DONE] Focus mode showing one section at a time
+  - [DONE] Sidebar layout with file tree + section nav
+  - [DONE] Split layout with narrative left, code right
+  - [DONE] Dashboard grid overview
+- [DONE] Preact + signals rewrite — reactive components, no more full DOM re-render
+- [DONE] Mark reviewed at bottom of section, auto-collapses and scrolls to header
 - Sticky toolbar that follows scroll
-- "Jump to next unreviewed section" button
-- Dark mode
 - Print/export to PDF for offline review
 - Mobile-responsive for reviewing on iPad
 
@@ -98,6 +109,20 @@ The reviewer MUST see every line of changed code. This is non-negotiable — thi
 - "Ask about this code" — inline AI Q&A on specific hunks
 - Custom system prompts per team/project (code style, architecture conventions)
 - Cost optimization: use Haiku for mechanical change grouping, Sonnet for narrative
+- [DONE] Git history metadata injected into AI prompt (commit sequence, file ages, churn)
+
+## Git History & Code Evolution
+
+- [DONE] Commit timeline in viewer header (collapsible, shows all PR commits)
+- [DONE] File age badges on hunk headers (last modified date from base branch)
+- [DONE] File churn badges showing iteration count (files touched multiple times in PR)
+- [DONE] Generator fetches commit history, file ages, and churn data via GitHub API
+- [DONE] AI narrative enriched with git history context (code age, iteration patterns)
+- Per-line commit attribution (which commit introduced each change)
+- Git blame integration showing age of individual lines being modified
+- "Addressed in commit N" labels on review comments when code changed after feedback
+- Temporal coupling detection (files that always change together)
+- Hotspot visualization showing high-churn areas
 
 ## Multi-Version / Iteration Support
 

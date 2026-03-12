@@ -8,24 +8,95 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Load .env from ~/src/alif/.env
 function loadEnvKey() {
-  const envPath = resolve(process.env.HOME, "src/alif/.env");
-  if (existsSync(envPath)) {
-    const lines = readFileSync(envPath, "utf-8").split("\n");
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+
+  // Check for .env file in project root
+  const localEnv = resolve(__dirname, "..", ".env");
+  if (existsSync(localEnv)) {
+    const lines = readFileSync(localEnv, "utf-8").split("\n");
     for (const line of lines) {
-      const match = line.match(/^ANTHROPIC_KEY=(.+)$/);
+      const match = line.match(/^ANTHROPIC_API_KEY=(.+)$/);
       if (match) return match[1].trim();
     }
   }
-  return process.env.ANTHROPIC_API_KEY;
+  return null;
+}
+
+function fetchGitHistory(owner, repo, number, pr) {
+  const result = { commits: [], fileAges: {}, churn: {} };
+  const execOpts = { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 };
+
+  // 1. Fetch detailed commits in the PR
+  try {
+    const commitsJson = execSync(
+      `gh api repos/${owner}/${repo}/pulls/${number}/commits --paginate`,
+      execOpts
+    );
+    const commits = JSON.parse(commitsJson);
+    result.commits = commits.map((c) => ({
+      sha: c.sha.slice(0, 7),
+      fullSha: c.sha,
+      author: c.commit.author.name,
+      date: c.commit.author.date,
+      message: c.commit.message.split("\n")[0],
+    }));
+
+    // 2. Detect file churn — how many commits touched each file
+    const fileTouches = {};
+    for (const c of commits) {
+      try {
+        const detail = JSON.parse(
+          execSync(`gh api repos/${owner}/${repo}/commits/${c.sha}`, execOpts)
+        );
+        for (const f of detail.files || []) {
+          fileTouches[f.filename] = (fileTouches[f.filename] || 0) + 1;
+        }
+      } catch {
+        // Skip commits we can't fetch details for
+      }
+    }
+    for (const [path, count] of Object.entries(fileTouches)) {
+      if (count >= 2) {
+        result.churn[path] = { touchCount: count };
+      }
+    }
+  } catch {
+    console.warn("Could not fetch PR commits");
+  }
+
+  // 3. Fetch file ages — when was each changed file last modified on the base branch
+  const changedFiles = (pr.files || []).map((f) => f.path);
+  for (const filePath of changedFiles.slice(0, 30)) {
+    try {
+      const historyJson = execSync(
+        `gh api "repos/${owner}/${repo}/commits?path=${encodeURIComponent(filePath)}&sha=${pr.baseRefName}&per_page=1"`,
+        execOpts
+      );
+      const history = JSON.parse(historyJson);
+      if (history.length > 0) {
+        const lastDate = history[0].commit.author.date;
+        result.fileAges[filePath] = {
+          lastModified: lastDate,
+          lastAuthor: history[0].commit.author.name,
+          daysSince: Math.floor(
+            (Date.now() - new Date(lastDate).getTime()) / (1000 * 60 * 60 * 24)
+          ),
+        };
+      }
+    } catch {
+      // New file or API error
+    }
+  }
+
+  return result;
 }
 
 async function fetchPRData(prUrl) {
@@ -75,6 +146,10 @@ async function fetchPRData(prUrl) {
     console.warn("Could not fetch reviews");
   }
 
+  // Fetch git history metadata
+  console.log("Fetching git history metadata...");
+  const gitHistory = fetchGitHistory(owner, repo, number, pr);
+
   return {
     source: "github",
     owner,
@@ -109,6 +184,7 @@ async function fetchPRData(prUrl) {
       body: r.body,
       submittedAt: r.submitted_at,
     })),
+    gitHistory,
   };
 }
 
@@ -274,13 +350,55 @@ WHAT TO SKIP in sections (leave for "Remaining Changes"):
 DIAGRAMS:
 - Architecture diagram: Show the structural transformation (before→after, or the new flow). Use subgraphs to group related components.
 - Section diagrams: Use when showing data flow, state machines, decision trees, or component relationships. Skip when the section is straightforward.
-- Keep diagrams focused — 5-12 nodes maximum. Dense diagrams are worse than no diagram.`;
+- Keep diagrams focused — 5-12 nodes maximum. Dense diagrams are worse than no diagram.
+
+GIT HISTORY (when provided):
+- Use commit history to understand the author's development sequence and mention it when illuminating.
+- If a file was iterated on multiple times (high churn), note this as it suggests complexity or refinement.
+- Use code age data to contextualize changes: "This module, untouched for 2 years, now gains..." or "Recently active area with 3 changes this month."
+- If review comments exist AND code was changed in subsequent commits, mention that the code was revised in response to feedback.
+- Don't mechanically list commit history — weave relevant insights into the narrative naturally.`;
+
+function formatGitHistoryForPrompt(gitHistory) {
+  if (!gitHistory) return "";
+  const parts = [];
+
+  if (gitHistory.commits?.length > 0) {
+    parts.push(`**Commit History (${gitHistory.commits.length} commits):**`);
+    for (const c of gitHistory.commits) {
+      parts.push(`- ${c.sha} ${c.author} (${new Date(c.date).toLocaleDateString()}): ${c.message}`);
+    }
+  }
+
+  const churnEntries = Object.entries(gitHistory.churn || {});
+  if (churnEntries.length > 0) {
+    parts.push(`\n**Files with multiple revisions during this PR (high iteration):**`);
+    for (const [path, info] of churnEntries.sort((a, b) => b[1].touchCount - a[1].touchCount)) {
+      parts.push(`- ${path}: touched ${info.touchCount} times`);
+    }
+  }
+
+  const ageEntries = Object.entries(gitHistory.fileAges || {});
+  if (ageEntries.length > 0) {
+    parts.push(`\n**Code age (last modified on base branch):**`);
+    for (const [path, info] of ageEntries.sort((a, b) => b.daysSince - a.daysSince)) {
+      const age = info.daysSince > 365
+        ? `${Math.floor(info.daysSince / 365)}y ago`
+        : info.daysSince > 30
+          ? `${Math.floor(info.daysSince / 30)}mo ago`
+          : `${info.daysSince}d ago`;
+      parts.push(`- ${path}: last changed ${age} by ${info.lastAuthor}`);
+    }
+  }
+
+  return parts.length > 0 ? "\n" + parts.join("\n") + "\n" : "";
+}
 
 async function generateWalkthrough(prData) {
   const apiKey = loadEnvKey();
   if (!apiKey) {
     throw new Error(
-      "No Anthropic API key found. Set ANTHROPIC_API_KEY or add ANTHROPIC_KEY to ~/src/alif/.env"
+      "No Anthropic API key found. Set ANTHROPIC_API_KEY env var or add ANTHROPIC_API_KEY=... to .env in project root"
     );
   }
 
@@ -295,7 +413,7 @@ ${prData.url ? `**URL:** ${prData.url}` : ""}
 ${prData.body ? `\n**PR Description:**\n${prData.body}` : ""}
 ${prData.comments?.length ? `\n**Existing Review Comments (${prData.comments.length}):**\n${prData.comments.map((c) => `- ${c.user} on ${c.path}:${c.line}: ${c.body.substring(0, 200)}`).join("\n")}` : ""}
 ${prData.reviews?.length ? `\n**Reviews:** ${prData.reviews.map((r) => `${r.user}: ${r.state}`).join(", ")}` : ""}
-
+${formatGitHistoryForPrompt(prData.gitHistory)}
 **Full Diff:**
 \`\`\`diff
 ${prData.diff}
@@ -385,12 +503,29 @@ async function main() {
     diff: prData.diff,
     comments: prData.comments || [],
     reviews: prData.reviews || [],
+    gitHistory: prData.gitHistory || null,
   };
 
-  const outPath = resolve(__dirname, "..", "public", "walkthrough-data.json");
-  writeFileSync(outPath, JSON.stringify(output, null, 2));
-  console.log(`\nWalkthrough data written to ${outPath}`);
-  console.log("Run 'pnpm dev' to view the interactive review.");
+  // Write to per-PR file if GitHub PR, otherwise default
+  const walkthroughsDir = resolve(__dirname, "..", "public", "walkthroughs");
+  if (!existsSync(walkthroughsDir)) {
+    mkdirSync(walkthroughsDir, { recursive: true });
+  }
+
+  let slug = "walkthrough-data";
+  if (prData.owner && prData.repo && prData.number) {
+    slug = `${prData.owner}-${prData.repo}-${prData.number}`;
+  }
+  const perPrPath = resolve(walkthroughsDir, `${slug}.json`);
+  writeFileSync(perPrPath, JSON.stringify(output, null, 2));
+
+  // Also write to default location for backward compat
+  const defaultPath = resolve(__dirname, "..", "public", "walkthrough-data.json");
+  writeFileSync(defaultPath, JSON.stringify(output, null, 2));
+
+  console.log(`\nWalkthrough data written to ${perPrPath}`);
+  console.log(`Slug: ${slug}`);
+  console.log(`Open: http://localhost:5200/?pr=${slug}`);
 }
 
 main().catch((err) => {
