@@ -13,6 +13,7 @@ import { FocusLayout } from "./layouts/FocusLayout";
 import { SplitLayout } from "./layouts/SplitLayout";
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { Landing } from "./Landing";
+import { ChatThread, chatOpen, toggleChat } from "./ChatThread";
 
 function getWalkthroughUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -140,6 +141,7 @@ export function App() {
           <div class="shortcut-row"><kbd>n</kbd><span>Jump to next unreviewed section</span></div>
           <div class="shortcut-row"><kbd>r</kbd><span>Toggle review on current section</span></div>
           <div class="shortcut-row"><kbd>e</kbd><span>Expand / collapse current section</span></div>
+          <div class="shortcut-row"><kbd>a</kbd><span>Toggle AI chat thread</span></div>
           <div class="shortcut-row"><kbd>?</kbd><span>Show this help</span></div>
         </div>
         <button class="btn btn-sm" data-close-shortcuts>Close</button>
@@ -174,7 +176,7 @@ export function App() {
         }
       }
 
-      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || window.__chatInputActive) return;
 
       // "." toggles action panel
       if (e.key === ".") {
@@ -192,6 +194,13 @@ export function App() {
           match.action();
           return;
         }
+      }
+
+      // Toggle chat
+      if (e.key === "a" || e.key === "A") {
+        e.preventDefault();
+        toggleChat();
+        return;
       }
 
       // Direct shortcuts (work without panel open too)
@@ -218,19 +227,17 @@ export function App() {
 
   const vm = viewMode.value;
 
-  switch (vm) {
-    case "sidebar":
-      return <SidebarLayout callbacks={callbacks} />;
-    case "focus":
-      return <FocusLayout callbacks={callbacks} />;
-    case "split":
-      return <SplitLayout callbacks={callbacks} />;
-    case "dashboard":
-      return <DashboardLayout callbacks={callbacks} />;
-    case "developer":
-      return <EditorialLayout callbacks={callbacks} />;
-    case "editorial":
-    default:
-      return <EditorialLayout callbacks={callbacks} />;
-  }
+  const Layout = {
+    sidebar: SidebarLayout,
+    focus: FocusLayout,
+    split: SplitLayout,
+    dashboard: DashboardLayout,
+  }[vm] || EditorialLayout;
+
+  return (
+    <>
+      <Layout callbacks={callbacks} />
+      <ChatThread />
+    </>
+  );
 }

@@ -79,6 +79,20 @@ pnpm generate --local develop
 pnpm generate --diff path/to/changes.patch
 ```
 
+### Caching
+
+Walkthroughs are cached by git SHA. Re-running `review` on the same PR:
+
+- **Same SHA** — reuses the cached walkthrough instantly (refreshes comments/reviews)
+- **Same branch, new commits** — sends the previous walkthrough to Claude for an incremental update (faster, preserves narrative structure)
+- **Different branch / first run** — full generation
+
+To force a full regeneration:
+
+```bash
+./bin/review https://github.com/owner/repo/pull/123 --force
+```
+
 ## Features
 
 - **6 view layouts**: Editorial, Sidebar, Focus (step-by-step), Split, Developer, Dashboard

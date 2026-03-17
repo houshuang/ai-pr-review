@@ -224,7 +224,7 @@ async function fetchPRData(prUrl) {
 
   // Use gh CLI to fetch PR data
   const prJson = execSync(
-    `gh pr view ${number} --repo ${owner}/${repo} --json title,body,url,baseRefName,headRefName,additions,deletions,changedFiles,commits,files`,
+    `gh pr view ${number} --repo ${owner}/${repo} --json title,body,url,baseRefName,headRefName,headRefOid,additions,deletions,changedFiles,commits,files`,
     { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
   );
   const pr = JSON.parse(prJson);
@@ -307,6 +307,7 @@ async function fetchPRData(prUrl) {
     url: prUrl,
     baseBranch: pr.baseRefName,
     headBranch: pr.headRefName,
+    headSha: pr.headRefOid || null,
     additions: pr.additions,
     deletions: pr.deletions,
     changedFiles: pr.changedFiles,
@@ -352,6 +353,9 @@ function fetchLocalDiff(baseBranch = "main") {
   const branch = execSync("git branch --show-current", {
     encoding: "utf-8",
   }).trim();
+  const headSha = execSync("git rev-parse HEAD", {
+    encoding: "utf-8",
+  }).trim();
 
   // Count additions/deletions from stat
   const statMatch = stat.match(
@@ -364,6 +368,7 @@ function fetchLocalDiff(baseBranch = "main") {
     url: "",
     baseBranch,
     headBranch: branch,
+    headSha,
     additions: statMatch ? parseInt(statMatch[2] || "0") : 0,
     deletions: statMatch ? parseInt(statMatch[3] || "0") : 0,
     changedFiles: statMatch ? parseInt(statMatch[1] || "0") : 0,
@@ -542,7 +547,7 @@ function formatGitHistoryForPrompt(gitHistory) {
   return parts.length > 0 ? "\n" + parts.join("\n") + "\n" : "";
 }
 
-async function generateWalkthrough(prData) {
+async function generateWalkthrough(prData, previousWalkthrough = null) {
   const apiKey = loadEnvKey();
   if (!apiKey) {
     throw new Error(
@@ -572,7 +577,20 @@ Focus your walkthrough on how the new code integrates with the existing system, 
 `;
   }
 
-  const userPrompt = `Create a walkthrough for this PR.
+  let previousContext = "";
+  if (previousWalkthrough) {
+    previousContext = `
+**⟳ INCREMENTAL UPDATE — Previous walkthrough provided below.**
+The branch has been updated with new commits since the last generation. Use the previous walkthrough as a starting point: keep sections that are still accurate, update line numbers and annotations for changed code, and add/remove sections as needed. Do NOT regenerate from scratch — preserve the narrative structure where possible.
+
+<previous_walkthrough>
+${JSON.stringify(previousWalkthrough, null, 2)}
+</previous_walkthrough>
+
+`;
+  }
+
+  const userPrompt = `${previousWalkthrough ? "Update" : "Create"} a walkthrough for this PR.
 
 **Title:** ${prData.title}
 **Branch:** ${prData.headBranch} → ${prData.baseBranch}
@@ -582,8 +600,7 @@ ${prData.body ? `\n**PR Description:**\n${prData.body}` : ""}
 ${prData.comments?.length ? `\n**Existing Review Comments (${prData.comments.length}):**\n${prData.comments.map((c) => `- ${c.user} on ${c.path}:${c.line}: ${c.body.substring(0, 200)}`).join("\n")}` : ""}
 ${prData.reviews?.length ? `\n**Reviews:** ${prData.reviews.map((r) => `${r.user}: ${r.state}`).join(", ")}` : ""}
 ${formatGitHistoryForPrompt(prData.gitHistory)}
-${largePRContext}
-**${largePRSummary ? "Focused" : "Full"} Diff:**
+${largePRContext}${previousContext}**${largePRSummary ? "Focused" : "Full"} Diff:**
 \`\`\`diff
 ${focusedDiff}
 \`\`\`
@@ -632,6 +649,8 @@ async function main() {
     );
     console.log("  node src/generate.js --local [base-branch]");
     console.log("  node src/generate.js --diff path/to/file.patch");
+    console.log("\nFlags:");
+    console.log("  --force    Skip cache, regenerate from scratch");
     process.exit(1);
   }
 
@@ -650,7 +669,47 @@ async function main() {
     process.exit(1);
   }
 
-  const walkthrough = await generateWalkthrough(prData);
+  // --- Cache logic ---
+  const walkthroughsDir = resolve(__dirname, "..", "public", "walkthroughs");
+  if (!existsSync(walkthroughsDir)) {
+    mkdirSync(walkthroughsDir, { recursive: true });
+  }
+
+  let slug = "walkthrough-data";
+  if (prData.owner && prData.repo && prData.number) {
+    slug = `${prData.owner}-${prData.repo}-${prData.number}`;
+  }
+  const perPrPath = resolve(walkthroughsDir, `${slug}.json`);
+
+  let cached = null;
+  if (existsSync(perPrPath)) {
+    try {
+      cached = JSON.parse(readFileSync(perPrPath, "utf-8"));
+    } catch {
+      log("INFO", "Cached file exists but failed to parse, will regenerate");
+    }
+  }
+
+  const forceRegenerate = args.includes("--force");
+  let walkthrough;
+
+  if (cached && !forceRegenerate && prData.headSha && cached.meta?.headSha === prData.headSha) {
+    // Same SHA — reuse walkthrough, just refresh comments/reviews/git history
+    console.log(`\n✓ Cache hit — SHA ${prData.headSha.slice(0, 7)} unchanged`);
+    console.log("  Refreshing comments and reviews...");
+    walkthrough = cached.walkthrough;
+  } else if (cached && !forceRegenerate && cached.meta?.headBranch === prData.headBranch) {
+    // Same branch, different SHA — incremental update
+    const oldSha = (cached.meta.headSha || "unknown").slice(0, 7);
+    const newSha = (prData.headSha || "unknown").slice(0, 7);
+    console.log(`\n↻ Branch updated (${oldSha} → ${newSha}), regenerating with previous walkthrough as context...`);
+    walkthrough = await generateWalkthrough(prData, cached.walkthrough);
+  } else {
+    if (cached && forceRegenerate) {
+      console.log("\n⟳ --force flag set, regenerating from scratch...");
+    }
+    walkthrough = await generateWalkthrough(prData);
+  }
 
   // Bundle the walkthrough with the raw diff and PR metadata
   const output = {
@@ -663,6 +722,7 @@ async function main() {
       url: prData.url,
       baseBranch: prData.baseBranch,
       headBranch: prData.headBranch,
+      headSha: prData.headSha || null,
       additions: prData.additions,
       deletions: prData.deletions,
       changedFiles: prData.changedFiles,
@@ -675,17 +735,7 @@ async function main() {
     gitHistory: prData.gitHistory || null,
   };
 
-  // Write to per-PR file if GitHub PR, otherwise default
-  const walkthroughsDir = resolve(__dirname, "..", "public", "walkthroughs");
-  if (!existsSync(walkthroughsDir)) {
-    mkdirSync(walkthroughsDir, { recursive: true });
-  }
-
-  let slug = "walkthrough-data";
-  if (prData.owner && prData.repo && prData.number) {
-    slug = `${prData.owner}-${prData.repo}-${prData.number}`;
-  }
-  const perPrPath = resolve(walkthroughsDir, `${slug}.json`);
+  // Write to per-PR file
   writeFileSync(perPrPath, JSON.stringify(output, null, 2));
 
   // Also write to default location for backward compat
