@@ -4,7 +4,7 @@ import {
   reviewState, actionPanelOpen, currentSectionIndex,
   saveReviewState, clearSet, isGitHubPR, getFileCoverage,
 } from "./state";
-import { refreshComments } from "./api";
+import { refreshComments, exportStaticHtml } from "./api";
 
 export function getActionItems(callbacks) {
   const {
@@ -48,6 +48,7 @@ export function getActionItems(callbacks) {
     { group: "View", label: "Split", key: "4", action: () => { viewMode.value = "split"; }, active: viewMode.value === "split" },
     { group: "View", label: "Developer", key: "5", action: () => { viewMode.value = "developer"; }, active: viewMode.value === "developer" },
     { group: "View", label: "Dashboard", key: "6", action: () => { viewMode.value = "dashboard"; }, active: viewMode.value === "dashboard" },
+    { group: "Export", label: "Export static HTML", key: "p", action: () => { closePanel(); exportStaticHtml().catch((err) => alert("Export failed: " + err.message)); } },
     { group: "Help", label: "Shortcuts", key: "?", action: () => { closePanel(); if (toggleShortcutsModal) toggleShortcutsModal(); } },
   ];
 }

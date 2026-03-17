@@ -3,3 +3,4 @@ dist/
 .env
 public/walkthrough-data.json
 public/walkthroughs/
+logs/

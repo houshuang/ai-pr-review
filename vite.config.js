@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
 import { execSync } from 'child_process';
+import { readFileSync } from 'fs';
 
 // Middleware to proxy GitHub API calls through `gh` CLI
 function ghApiProxy() {
@@ -65,10 +66,47 @@ function ghApiProxy() {
   };
 }
 
+// Endpoint to export a static HTML walkthrough
+function exportEndpoint() {
+  return {
+    name: 'export-endpoint',
+    configureServer(server) {
+      server.middlewares.use('/api/export', (req, res) => {
+        if (req.method !== 'GET') {
+          res.statusCode = 405;
+          res.end(JSON.stringify({ error: 'GET only' }));
+          return;
+        }
+
+        try {
+          const url = new URL(req.url, 'http://localhost');
+          const slug = url.searchParams.get('slug') || 'walkthrough-data';
+          const mode = url.searchParams.get('mode') || 'unified';
+          const tmpFile = `/tmp/review-export-${slug}.html`;
+
+          execSync(
+            `node src/export-static.js ${JSON.stringify(slug)} --output ${JSON.stringify(tmpFile)} --mode ${JSON.stringify(mode)}`,
+            { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
+          );
+
+          const html = readFileSync(tmpFile, 'utf-8');
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          res.setHeader('Content-Disposition', `attachment; filename="${slug}.html"`);
+          res.end(html);
+        } catch (err) {
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: err.message, stderr: err.stderr?.toString() || '' }));
+        }
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: '.',
   build: {
     outDir: 'dist',
   },
-  plugins: [preact(), ghApiProxy()],
+  plugins: [preact(), ghApiProxy(), exportEndpoint()],
 });

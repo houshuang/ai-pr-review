@@ -8,22 +8,136 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// --- Logging ---
+const LOG_DIR = resolve(__dirname, "..", "logs");
+mkdirSync(LOG_DIR, { recursive: true });
+const LOG_FILE = resolve(LOG_DIR, `generate-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
+
+function log(level, ...args) {
+  const msg = `[${new Date().toISOString()}] [${level}] ${args.join(" ")}`;
+  appendFileSync(LOG_FILE, msg + "\n");
+  if (level === "ERROR") {
+    console.error(...args);
+  } else {
+    console.log(...args);
+  }
+}
+
+// --- Diff parsing and prioritization for large PRs ---
+
+/**
+ * Parse a unified diff into per-file entries.
+ * Each entry: { path, isNew, isDeleted, isRenamed, diffText, addedLines, removedLines }
+ */
+function parseDiffIntoFiles(diff) {
+  const files = [];
+  // Split on diff headers
+  const chunks = diff.split(/^(?=diff --git )/m);
+  for (const chunk of chunks) {
+    if (!chunk.trim()) continue;
+    const headerMatch = chunk.match(/^diff --git a\/(.+?) b\/(.+)/);
+    if (!headerMatch) continue;
+    const path = headerMatch[2];
+    const isNew = /^new file mode/m.test(chunk);
+    const isDeleted = /^deleted file mode/m.test(chunk);
+    const isRenamed = /^rename from/m.test(chunk);
+    let addedLines = 0;
+    let removedLines = 0;
+    for (const line of chunk.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) addedLines++;
+      if (line.startsWith("-") && !line.startsWith("---")) removedLines++;
+    }
+    files.push({ path, isNew, isDeleted, isRenamed, diffText: chunk, addedLines, removedLines });
+  }
+  return files;
+}
+
+/**
+ * For large PRs, build a focused diff that prioritizes files interacting with
+ * existing code (modified/deleted) and summarizes purely new files.
+ *
+ * Returns { diff, largePRSummary } where largePRSummary is null for normal PRs
+ * or an object describing what was included/excluded.
+ */
+function buildFocusedDiff(fullDiff, maxDiffLines = 15000) {
+  const lineCount = fullDiff.split("\n").length;
+  if (lineCount <= maxDiffLines) {
+    return { diff: fullDiff, largePRSummary: null };
+  }
+
+  const files = parseDiffIntoFiles(fullDiff);
+  const modified = files.filter(f => !f.isNew && !f.isDeleted);
+  const deleted = files.filter(f => f.isDeleted);
+  const newFiles = files.filter(f => f.isNew);
+
+  // Always include modified and deleted files in full — they touch existing code
+  const priorityDiffParts = [...modified, ...deleted].map(f => f.diffText);
+  let priorityDiff = priorityDiffParts.join("\n");
+  const priorityLineCount = priorityDiff.split("\n").length;
+  const remainingBudget = maxDiffLines - priorityLineCount;
+
+  // Sort new files: smaller files first (more likely to be glue/integration code)
+  const sortedNew = [...newFiles].sort((a, b) => a.addedLines - b.addedLines);
+
+  const includedNew = [];
+  const summarizedNew = [];
+  let usedBudget = 0;
+
+  for (const f of sortedNew) {
+    const fLines = f.diffText.split("\n").length;
+    if (usedBudget + fLines <= remainingBudget) {
+      includedNew.push(f);
+      usedBudget += fLines;
+    } else {
+      summarizedNew.push(f);
+    }
+  }
+
+  // Build the focused diff
+  const parts = [priorityDiff];
+  for (const f of includedNew) {
+    parts.push(f.diffText);
+  }
+
+  // Build summaries for excluded new files
+  const summaryLines = summarizedNew.map(f =>
+    `- ${f.path} (new file, +${f.addedLines} lines)`
+  );
+
+  const summary = {
+    totalFiles: files.length,
+    modifiedFiles: modified.length,
+    deletedFiles: deleted.length,
+    newFilesIncluded: includedNew.length,
+    newFilesSummarized: summarizedNew.length,
+    summarizedFiles: summaryLines,
+    originalLineCount: lineCount,
+    focusedLineCount: priorityLineCount + usedBudget,
+  };
+
+  log("INFO", `Large PR: ${lineCount} diff lines → focused to ${summary.focusedLineCount} lines`);
+  log("INFO", `  ${modified.length} modified, ${deleted.length} deleted (full diff)`);
+  log("INFO", `  ${includedNew.length} new files included, ${summarizedNew.length} summarized`);
+
+  return { diff: parts.join("\n"), largePRSummary: summary };
+}
+
 function loadEnvKey() {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
 
-  // Check for .env file in project root
+  // Check for .env file in the tool's own directory (not cwd)
   const localEnv = resolve(__dirname, "..", ".env");
   if (existsSync(localEnv)) {
     const lines = readFileSync(localEnv, "utf-8").split("\n");
     for (const line of lines) {
-      const match = line.match(/^ANTHROPIC_API_KEY=(.+)$/);
+      const match = line.match(/^ANTHROPIC_(?:API_)?KEY=(.+)$/);
       if (match) return match[1].trim();
     }
   }
@@ -115,11 +229,45 @@ async function fetchPRData(prUrl) {
   );
   const pr = JSON.parse(prJson);
 
-  // Fetch the full diff
-  const diff = execSync(
-    `gh pr diff ${number} --repo ${owner}/${repo}`,
-    { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
-  );
+  // Fetch the full diff — fall back to local git if GitHub API rejects (too large)
+  let diff;
+  let diffSource = "github-api";
+  try {
+    diff = execSync(
+      `gh pr diff ${number} --repo ${owner}/${repo}`,
+      { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
+    );
+  } catch (diffErr) {
+    const errMsg = diffErr.stderr?.toString() || diffErr.message || "";
+    if (errMsg.includes("too_large") || errMsg.includes("406")) {
+      log("INFO", `GitHub diff API rejected PR (too large). Falling back to local git diff...`);
+      diffSource = "local-git";
+      // Use the original CWD (where user ran the command) — likely the repo
+      const repoCwd = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
+      try {
+        execSync(`git fetch origin ${pr.baseRefName} ${pr.headRefName}`, {
+          encoding: "utf-8",
+          stdio: "pipe",
+          cwd: repoCwd,
+        });
+        diff = execSync(
+          `git diff origin/${pr.baseRefName}...origin/${pr.headRefName}`,
+          { encoding: "utf-8", maxBuffer: 100 * 1024 * 1024, cwd: repoCwd }
+        );
+        log("INFO", `Local git diff: ${(diff.length / 1024).toFixed(1)}KB (from ${repoCwd})`);
+      } catch (gitErr) {
+        throw new Error(
+          `GitHub diff API rejected this PR as too large, and local git diff also failed.\n` +
+          `GitHub error: ${errMsg.trim()}\n` +
+          `Git error: ${gitErr.message}\n` +
+          `Tried repo at: ${repoCwd}\n\n` +
+          `Try running from inside the repo: cd <repo> && review --local ${pr.baseRefName}`
+        );
+      }
+    } else {
+      throw new Error(`Failed to fetch PR diff: ${errMsg.trim()}`);
+    }
+  }
 
   // Fetch existing review comments
   console.log("Fetching review comments...");
@@ -404,6 +552,26 @@ async function generateWalkthrough(prData) {
 
   const client = new Anthropic({ apiKey });
 
+  // For large diffs, focus on code that interacts with existing system
+  const { diff: focusedDiff, largePRSummary } = buildFocusedDiff(prData.diff);
+
+  let largePRContext = "";
+  if (largePRSummary) {
+    largePRContext = `
+**⚠️ Large PR — Focused Review Mode**
+This PR is too large to include all diffs. The diff below prioritizes:
+1. **Modified files** (full diff) — these touch existing code and are the highest review priority
+2. **Deleted files** (full diff)
+3. **Smaller new files** (full diff) — likely glue/integration code
+4. **Large new files** (summarized only) — self-contained additions, lower review priority
+
+New files NOT included in the diff (${largePRSummary.newFilesSummarized} files):
+${largePRSummary.summarizedFiles.join("\n")}
+
+Focus your walkthrough on how the new code integrates with the existing system, not on the internal implementation of new standalone modules.
+`;
+  }
+
   const userPrompt = `Create a walkthrough for this PR.
 
 **Title:** ${prData.title}
@@ -414,19 +582,20 @@ ${prData.body ? `\n**PR Description:**\n${prData.body}` : ""}
 ${prData.comments?.length ? `\n**Existing Review Comments (${prData.comments.length}):**\n${prData.comments.map((c) => `- ${c.user} on ${c.path}:${c.line}: ${c.body.substring(0, 200)}`).join("\n")}` : ""}
 ${prData.reviews?.length ? `\n**Reviews:** ${prData.reviews.map((r) => `${r.user}: ${r.state}`).join(", ")}` : ""}
 ${formatGitHistoryForPrompt(prData.gitHistory)}
-**Full Diff:**
+${largePRContext}
+**${largePRSummary ? "Focused" : "Full"} Diff:**
 \`\`\`diff
-${prData.diff}
+${focusedDiff}
 \`\`\`
 
 Generate the walkthrough JSON. Important reminders:
 - Every hunk must reference real file paths and line numbers from the diff above
 - Annotations should describe the CHANGE (what was different before), not just describe the resulting code
 - Mermaid diagrams: raw mermaid syntax only, do NOT wrap in \`\`\`mermaid code fences
-- file_map must include every file in the diff`;
+- file_map must include every file in the diff${largePRSummary ? " (including summarized new files that were not in the diff — mark them with a note that full diff was omitted)" : ""}`;
 
-  console.log("Sending to Claude API...");
-  console.log(`Diff size: ${(prData.diff.length / 1024).toFixed(1)}KB`);
+  log("INFO", "Sending to Claude API...");
+  log("INFO", `Diff size: ${(focusedDiff.length / 1024).toFixed(1)}KB${largePRSummary ? ` (focused from ${(prData.diff.length / 1024).toFixed(1)}KB)` : ""}`);
 
   const response = await client.messages.create({
     model: "claude-sonnet-4-20250514",
@@ -529,6 +698,16 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("Error:", err.message);
+  log("ERROR", `\nFailed: ${err.message}`);
+  if (err.stack) {
+    appendFileSync(LOG_FILE, `\nStack trace:\n${err.stack}\n`);
+  }
+  if (err.status) {
+    log("ERROR", `API status: ${err.status}`);
+  }
+  if (err.error) {
+    appendFileSync(LOG_FILE, `\nAPI error body:\n${JSON.stringify(err.error, null, 2)}\n`);
+  }
+  console.error(`\nLog file: ${LOG_FILE}`);
   process.exit(1);
 });

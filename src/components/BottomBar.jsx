@@ -3,6 +3,7 @@ import { useCallback } from "preact/hooks";
 import {
   data, diffViewMode, showComments, isGitHubPR, getProgress, actionPanelOpen,
 } from "../state";
+import { exportStaticHtml } from "../api";
 
 export function BottomBar({ onApprove, onRequestChanges }) {
   const progress = getProgress();
@@ -17,6 +18,10 @@ export function BottomBar({ onApprove, onRequestChanges }) {
 
   const handleToggleComments = useCallback(() => {
     showComments.value = !showComments.value;
+  }, []);
+
+  const handleExport = useCallback(() => {
+    exportStaticHtml().catch((err) => alert("Export failed: " + err.message));
   }, []);
 
   const handleActionPanel = useCallback(() => {
@@ -48,6 +53,9 @@ export function BottomBar({ onApprove, onRequestChanges }) {
       </div>
       <div className="bar-seg bar-clickable" id="btn-toggle-comments" onClick={handleToggleComments}>
         &#x1f4ac; {commentCount}
+      </div>
+      <div className="bar-seg bar-clickable" onClick={handleExport} title="Export static HTML (p)">
+        Export
       </div>
       <div className="bar-right">
         {gh && (

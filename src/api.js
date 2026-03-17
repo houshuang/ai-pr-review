@@ -1,4 +1,4 @@
-import { data, isGitHubPR, fileContentCache } from "./state";
+import { data, isGitHubPR, fileContentCache, diffViewMode } from "./state";
 
 export async function ghApi(method, endpoint, body) {
   const resp = await fetch("/api/gh", {
@@ -267,4 +267,28 @@ export async function expandContext(filePath, direction, blockNewStart, findFile
   // Trigger re-render by updating parsedFiles reference
   // (the file object was mutated in-place, so we need to signal the change)
   return true;
+}
+
+export async function exportStaticHtml() {
+  const d = data.value;
+  if (!d) return;
+
+  const params = new URLSearchParams();
+  const slug = new URLSearchParams(window.location.search).get("pr") || "walkthrough-data";
+  params.set("slug", slug);
+  params.set("mode", diffViewMode.value || "unified");
+
+  const resp = await fetch(`/api/export?${params}`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: "Export failed" }));
+    throw new Error(err.error || "Export failed");
+  }
+
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${slug}.html`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
