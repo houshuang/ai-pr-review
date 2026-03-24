@@ -1248,20 +1248,20 @@ strong { font-weight: 600; }
 .d2h-ins.d2h-change { background: var(--green-bg) !important; }
 .d2h-del.d2h-change { background: var(--red-bg) !important; }
 
-/* Empty placeholder cells in split view */
-.d2h-empty-placeholder { background: var(--bg-white) !important; border-color: #d1d9e0 !important; }
+/* diff2html overrides — all use CSS vars so dark mode inherits automatically */
+.d2h-empty-placeholder { background: var(--bg) !important; border-color: var(--border) !important; }
 .d2h-ins .d2h-code-line-ctn { background: var(--green-bg) !important; }
 .d2h-del .d2h-code-line-ctn { background: var(--red-bg) !important; }
-.d2h-ins .d2h-code-side-linenumber { background: #ccffd8 !important; color: var(--green) !important; }
-.d2h-del .d2h-code-side-linenumber { background: #ffd7d5 !important; color: var(--red) !important; }
-.d2h-cntx .d2h-code-side-linenumber { background: #f6f8fa !important; }
+.d2h-ins .d2h-code-side-linenumber { background: var(--green-hl) !important; color: var(--green) !important; }
+.d2h-del .d2h-code-side-linenumber { background: var(--red-hl) !important; color: var(--red) !important; }
+.d2h-cntx .d2h-code-side-linenumber { background: var(--bg) !important; color: var(--ink-faint) !important; }
 .d2h-cntx .d2h-code-side-line { background: var(--bg-white) !important; }
 .d2h-ins .d2h-code-side-line { background: var(--green-bg) !important; }
 .d2h-del .d2h-code-side-line { background: var(--red-bg) !important; }
-.d2h-code-linenumber { border-color: #d1d9e0 !important; color: #636c76 !important; background: var(--bg-white) !important; }
-.d2h-ins .d2h-code-linenumber { background: #ccffd8 !important; color: var(--green) !important; }
-.d2h-del .d2h-code-linenumber { background: #ffd7d5 !important; color: var(--red) !important; }
-.d2h-code-side-linenumber { border-color: #d1d9e0 !important; color: #636c76 !important; }
+.d2h-code-linenumber { border-color: var(--border) !important; color: var(--ink-faint) !important; background: var(--bg) !important; }
+.d2h-ins .d2h-code-linenumber { background: var(--green-hl) !important; color: var(--green) !important; }
+.d2h-del .d2h-code-linenumber { background: var(--red-hl) !important; color: var(--red) !important; }
+.d2h-code-side-linenumber { border-color: var(--border) !important; color: var(--ink-faint) !important; }
 
 /* Inline highlights in diff — solid blocks spanning adjacent words + gaps */
 .d2h-ins .d2h-code-line-ctn ins,
@@ -1709,26 +1709,15 @@ html.dark .hljs-literal { color: #79c0ff; }
 html.dark .hljs-attr { color: #79c0ff; }
 html.dark .hljs-params { color: var(--ink); }
 html.dark .hljs-meta { color: #79c0ff; }
-html.dark .d2h-cntx .d2h-code-side-line { background: var(--bg) !important; }
-html.dark .d2h-ins .d2h-code-side-line { background: var(--green-bg) !important; }
-html.dark .d2h-del .d2h-code-side-line { background: var(--red-bg) !important; }
-html.dark .d2h-empty-placeholder { background: var(--bg) !important; border-color: var(--border) !important; }
-html.dark .d2h-info { background: var(--bg-white) !important; color: var(--ink-faint) !important; border-color: var(--border) !important; }
-html.dark .d2h-ins { background: var(--green-bg) !important; }
-html.dark .d2h-del { background: var(--red-bg) !important; }
-html.dark .d2h-ins .d2h-code-line-ctn { background: var(--green-bg) !important; }
-html.dark .d2h-del .d2h-code-line-ctn { background: var(--red-bg) !important; }
-html.dark .d2h-ins .d2h-code-side-linenumber { background: var(--green-bg) !important; }
-html.dark .d2h-del .d2h-code-side-linenumber { background: var(--red-bg) !important; }
-html.dark .d2h-cntx .d2h-code-side-linenumber { background: var(--bg-white) !important; }
-
-/* Fix diff2html borders and file headers in dark mode */
+/* ── Dark mode: diff2html extras (base styles already use vars) ── */
 html.dark .d2h-file-header { background: var(--bg-white) !important; border-color: var(--border) !important; }
 html.dark .d2h-file-wrapper { border-color: var(--border) !important; }
+html.dark .d2h-info { background: var(--bg-white) !important; color: var(--ink-faint) !important; border-color: var(--border) !important; }
 html.dark .d2h-diff-table { border-color: var(--border) !important; }
 html.dark .d2h-diff-tbody tr { border-color: var(--border) !important; }
 html.dark .d2h-code-side-line { border-color: var(--border) !important; }
 html.dark .d2h-code-line { border-color: var(--border) !important; }
+html.dark .d2h-code-line-ctn { color: var(--ink); }
 
 /* ═══════════════════════════════════════════════════════
    VIEW: SIDEBAR
