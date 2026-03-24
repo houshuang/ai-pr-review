@@ -2,8 +2,9 @@
 
 An AI-powered code review tool that turns pull requests into interactive, narrated walkthroughs. Instead of reading diffs top-to-bottom, you get a structured explanation of *what changed* and *why* — with architecture diagrams, annotated code, and the ability to ask questions about any section.
 
-<!-- TODO: screenshot or video -->
-![Screenshot](docs/screenshot.png)
+<img width="1719" height="1293" alt="image" src="https://github.com/user-attachments/assets/ff72942f-5739-4211-b7a8-83a5cca06427" />
+
+<img width="1717" height="1293" alt="image" src="https://github.com/user-attachments/assets/1d21de8f-ff7b-48dc-ac85-836ac8a8a915" />
 
 ## The problem
 
