@@ -7,8 +7,14 @@ import { md } from "../utils";
 // ── Chat state (signals) ──────────────────────
 export const chatOpen = signal(false);
 export const chatMessages = signal([]); // [{id, role, content, sectionId, timestamp}]
+export const chatSelectedText = signal(""); // text selected when chat was opened
 
 export function toggleChat() {
+  // Capture selected text before opening
+  if (!chatOpen.value) {
+    const sel = window.getSelection();
+    chatSelectedText.value = sel ? sel.toString().trim() : "";
+  }
   chatOpen.value = !chatOpen.value;
 }
 
@@ -35,12 +41,43 @@ export function ChatThread() {
     }
   }, [threadMessages.length, streamContent]);
 
-  // Focus input when opened
+  // Focus input when opened, pre-fill with selected text
   useEffect(() => {
     if (chatOpen.value && inputRef.current) {
-      setTimeout(() => inputRef.current.focus(), 50);
+      setTimeout(() => {
+        if (chatSelectedText.value) {
+          setInput(`> ${chatSelectedText.value}\n\n`);
+          chatSelectedText.value = "";
+          // Resize textarea
+          inputRef.current.style.height = "auto";
+          inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
+        }
+        inputRef.current.focus();
+        // Move cursor to end
+        const len = inputRef.current.value.length;
+        inputRef.current.setSelectionRange(len, len);
+      }, 50);
     }
   }, [chatOpen.value, sectionId]);
+
+  // Build rich context from section data
+  function buildSectionContext() {
+    if (!currentSection) return {};
+    const hunks = (currentSection.hunks || []).map(h => ({
+      file: h.file,
+      lines: `${h.startLine}-${h.endLine}`,
+      importance: h.importance,
+      annotation: h.annotation,
+    }));
+    const callouts = (currentSection.callouts || []).map(c => `[${c.type}] ${c.label}: ${c.text}`);
+    return {
+      sectionTitle: currentSection.title,
+      sectionNarrative: currentSection.narrative,
+      sectionHunks: hunks,
+      sectionCallouts: callouts,
+      sectionDiagram: currentSection.diagram || null,
+    };
+  }
 
   async function sendMessage() {
     if (!input.trim() || streaming) return;
@@ -65,6 +102,8 @@ export function ChatThread() {
         .slice(-20)
         .map(m => ({ role: m.role, content: m.content }));
 
+      const sectionCtx = buildSectionContext();
+
       const resp = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -72,13 +111,10 @@ export function ChatThread() {
           message: msg.content,
           history,
           sectionId,
-          sectionTitle: currentSection?.title,
-          sectionNarrative: currentSection?.narrative,
-          sectionFiles: (currentSection?.hunks || []).map(h => h.file),
+          ...sectionCtx,
           prTitle: d?.walkthrough?.title,
           prUrl: d?.meta?.url,
           prOverview: d?.walkthrough?.overview,
-          projectPath: d?.meta?.projectPath || null,
         }),
       });
 
@@ -125,12 +161,15 @@ export function ChatThread() {
 
   if (!chatOpen.value) return null;
 
+  const hunkCount = currentSection?.hunks?.length || 0;
+  const fileCount = new Set((currentSection?.hunks || []).map(h => h.file)).size;
+
   return (
     <div class="chat-thread">
       <div class="chat-thread-header">
         <div class="chat-thread-header-left">
           <div class="chat-thread-icon">C</div>
-          <div style="min-width:0;overflow:hidden">
+          <div style="min-width:0">
             <div class="chat-thread-title">{currentSection?.title || "Thread"}</div>
             <div class="chat-thread-subtitle">
               {sectionId ? `Section ${currentSectionIndex.value + 1}` : "Select a section"}
@@ -143,19 +182,18 @@ export function ChatThread() {
       </div>
 
       <div class="chat-thread-context">
-        {sectionId && (
-          <span class="chat-ctx-chip chat-ctx-section">{currentSection?.title}</span>
-        )}
-        {d?.meta?.url && <span class="chat-ctx-chip chat-ctx-pr">PR</span>}
-        <span class="chat-ctx-chip chat-ctx-repo">Repo</span>
-        <span class="chat-ctx-chip chat-ctx-tools">Tools</span>
+        <span class="chat-ctx-chip chat-ctx-section">{fileCount} file{fileCount !== 1 ? "s" : ""}, {hunkCount} hunk{hunkCount !== 1 ? "s" : ""}</span>
+        {d?.walkthrough?.overview && <span class="chat-ctx-chip chat-ctx-pr">Overview</span>}
+        {currentSection?.narrative && <span class="chat-ctx-chip chat-ctx-repo">Narrative</span>}
+        {currentSection?.callouts?.length > 0 && <span class="chat-ctx-chip chat-ctx-tools">Callouts</span>}
       </div>
 
       <div class="chat-thread-messages" ref={messagesRef}>
         {threadMessages.length === 0 && !streaming && (
           <div class="chat-thread-empty">
             <div class="chat-thread-empty-text">
-              Ask about this section's code changes, design decisions, or implications
+              Ask about this section's code changes, design decisions, or implications.
+              {" "}Select text in the diff and press <kbd>a</kbd> to quote it here.
             </div>
           </div>
         )}
@@ -232,7 +270,6 @@ export function ChatThread() {
           <span>
             <kbd>Enter</kbd> send &middot; <kbd>Shift+Enter</kbd> newline
           </span>
-          <span>{currentSection?.title || ""}</span>
         </div>
       </div>
     </div>

@@ -138,7 +138,8 @@ function chatMiddleware() {
           try {
             const {
               message, history, sectionTitle,
-              sectionNarrative, sectionFiles, prTitle, prUrl, prOverview,
+              sectionNarrative, sectionHunks, sectionCallouts, sectionDiagram,
+              prTitle, prUrl, prOverview,
             } = JSON.parse(body);
 
             const apiKey = loadChatApiKey();
@@ -149,20 +150,38 @@ function chatMiddleware() {
               return;
             }
 
+            // Build rich hunk context
+            let hunksContext = '';
+            if (sectionHunks?.length) {
+              hunksContext = '\n## Code Changes in this Section\n' +
+                sectionHunks.map(h =>
+                  `**${h.file}** (lines ${h.lines}, ${h.importance})\n${h.annotation}`
+                ).join('\n\n');
+            }
+
+            let calloutsContext = '';
+            if (sectionCallouts?.length) {
+              calloutsContext = '\n## Callouts\n' + sectionCallouts.join('\n');
+            }
+
             const systemPrompt = [
               'You are an AI code review assistant embedded in a PR walkthrough tool.',
               'You help reviewers understand code changes, design decisions, and implications.',
+              'You have the full context of the current section including narrative, code annotations, and callouts.',
               '',
               prTitle ? `## PR: ${prTitle}` : '',
               prUrl ? `URL: ${prUrl}` : '',
               prOverview ? `## Overview\n${prOverview}` : '',
               sectionTitle ? `## Current Section: ${sectionTitle}` : '',
               sectionNarrative ? `## Section Narrative\n${sectionNarrative}` : '',
-              sectionFiles?.length ? `## Files in this section\n${sectionFiles.join('\n')}` : '',
+              hunksContext,
+              calloutsContext,
+              sectionDiagram ? `## Section Diagram\n${sectionDiagram}` : '',
               '',
               '## Instructions',
               '- Answer questions about the code changes in this PR section',
-              '- When referencing code, cite specific files and line numbers from the narrative',
+              '- When referencing code, cite specific files and line numbers',
+              '- If the user quotes code with >, focus your answer on that specific code',
               '- Keep responses concise and actionable — this is a review context',
               '- Format with markdown: code blocks, bold, lists, tables',
             ].filter(Boolean).join('\n');

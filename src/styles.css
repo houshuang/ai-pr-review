@@ -2442,7 +2442,7 @@ body {
 }
 .chat-thread-title {
   font-size: 13px; font-weight: 600; color: var(--ink); margin: 0;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  line-height: 1.3;
 }
 .chat-thread-subtitle { font-size: 11px; color: var(--ink-mid); margin: 0; }
 .chat-thread-close {
@@ -2462,7 +2462,7 @@ body {
   padding: 3px 9px; border-radius: 6px; font-size: 10px;
   font-weight: 500; display: inline-flex; align-items: center; gap: 4px; border: 1px solid;
 }
-.chat-ctx-section { background: var(--blue-bg); border-color: rgba(82,125,165,0.2); color: var(--blue); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-ctx-section { background: var(--blue-bg); border-color: rgba(82,125,165,0.2); color: var(--blue); }
 .chat-ctx-pr { background: var(--green-dim); border-color: rgba(26,127,55,0.2); color: var(--green); }
 .chat-ctx-repo { background: var(--orange-bg); border-color: rgba(199,125,46,0.2); color: var(--orange); }
 .chat-ctx-tools { background: var(--purple-bg); border-color: rgba(144,101,176,0.2); color: var(--purple); }
@@ -2480,6 +2480,10 @@ body {
   align-items: center; justify-content: center;
   color: var(--ink-faint); font-size: 13px; text-align: center;
   padding: 32px 20px; gap: 8px; line-height: 1.5;
+}
+.chat-thread-empty kbd {
+  background: var(--bg); padding: 1px 5px; border-radius: 3px;
+  border: 1px solid var(--border); font-family: var(--mono); font-size: 11px;
 }
 
 .chat-msg { font-size: 13px; line-height: 1.6; word-wrap: break-word; }
