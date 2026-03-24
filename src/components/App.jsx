@@ -196,15 +196,8 @@ export function App() {
         }
       }
 
-      // Toggle chat
-      if (e.key === "a" || e.key === "A") {
-        e.preventDefault();
-        toggleChat();
-        return;
-      }
-
       // Direct shortcuts (work without panel open too)
-      const directKeys = { j: true, k: true, n: true, r: true, e: true, "?": true };
+      const directKeys = { a: true, j: true, k: true, n: true, r: true, e: true, "?": true };
       if (directKeys[e.key]) {
         const items = getActionItems(callbacks);
         const match = items.find((item) => item.key === e.key);

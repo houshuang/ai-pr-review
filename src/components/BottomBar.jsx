@@ -4,6 +4,7 @@ import {
   data, diffViewMode, showComments, isGitHubPR, getProgress, actionPanelOpen,
 } from "../state";
 import { exportStaticHtml } from "../api";
+import { toggleChat, chatOpen } from "./ChatThread";
 
 export function BottomBar({ onApprove, onRequestChanges }) {
   const progress = getProgress();
@@ -56,6 +57,9 @@ export function BottomBar({ onApprove, onRequestChanges }) {
       </div>
       <div className="bar-seg bar-clickable" onClick={handleExport} title="Export static HTML (p)">
         Export
+      </div>
+      <div className={`bar-seg bar-clickable ${chatOpen.value ? "bar-on" : ""}`} onClick={toggleChat} title="AI Chat (a)">
+        AI Chat
       </div>
       <div className="bar-right">
         {gh && (

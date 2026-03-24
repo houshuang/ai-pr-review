@@ -5,6 +5,7 @@ import {
   saveReviewState, clearSet, isGitHubPR, getFileCoverage,
 } from "./state";
 import { refreshComments, exportStaticHtml } from "./api";
+import { toggleChat } from "./components/ChatThread";
 
 export function getActionItems(callbacks) {
   const {
@@ -33,8 +34,9 @@ export function getActionItems(callbacks) {
     { group: "Navigate", label: "Next section", key: "j", action: () => { closePanel(); if (navigateSection) navigateSection(1); } },
     { group: "Navigate", label: "Prev section", key: "k", action: () => { closePanel(); if (navigateSection) navigateSection(-1); } },
     { group: "Navigate", label: "Review current", key: "r", action: () => { closePanel(); if (reviewCurrentSection) reviewCurrentSection(); } },
+    { group: "AI", label: "AI Chat", key: "a", action: () => { closePanel(); toggleChat(); } },
     ...(gh ? [
-      { group: "Review", label: "Approve PR", key: "a", action: () => { closePanel(); if (openReviewModal) openReviewModal("APPROVE", "Approve this PR"); } },
+      { group: "Review", label: "Approve PR", key: "y", action: () => { closePanel(); if (openReviewModal) openReviewModal("APPROVE", "Approve this PR"); } },
       { group: "Review", label: "Request changes", key: "x", action: () => { closePanel(); if (openReviewModal) openReviewModal("REQUEST_CHANGES", "Request Changes"); } },
       { group: "Review", label: "Refresh comments", key: "f", action: () => { closePanel(); refreshComments(); } },
     ] : []),
