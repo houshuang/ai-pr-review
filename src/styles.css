@@ -1263,7 +1263,7 @@ strong { font-weight: 600; }
 .d2h-code-linenumber { border-color: var(--border) !important; color: var(--ink-faint) !important; background: var(--bg) !important; }
 .d2h-ins .d2h-code-linenumber { background: var(--green-bg) !important; color: var(--green) !important; }
 .d2h-del .d2h-code-linenumber { background: var(--red-bg) !important; color: var(--red) !important; }
-.d2h-code-side-linenumber { border-color: var(--border) !important; color: var(--ink-faint) !important; }
+.d2h-code-side-linenumber { border-color: var(--border) !important; color: var(--ink-faint) !important; background: var(--bg) !important; }
 
 /* Inline highlights in diff — solid blocks spanning adjacent words + gaps */
 .d2h-ins .d2h-code-line-ctn ins,
@@ -1720,7 +1720,9 @@ html.dark .d2h-ins .d2h-code-linenumber { color: var(--ink-faint) !important; ba
 html.dark .d2h-del .d2h-code-side-linenumber,
 html.dark .d2h-del .d2h-code-linenumber { color: var(--ink-faint) !important; background: rgba(248,81,73,0.08) !important; }
 html.dark .d2h-cntx .d2h-code-side-linenumber,
-html.dark .d2h-cntx .d2h-code-linenumber { color: var(--ink-faint) !important; background: var(--bg) !important; }
+html.dark .d2h-cntx .d2h-code-linenumber,
+html.dark td.d2h-code-side-linenumber.d2h-cntx,
+html.dark td.d2h-code-linenumber.d2h-cntx { color: var(--ink-faint) !important; background: var(--bg) !important; }
 
 html.dark .d2h-file-header { background: var(--bg-white) !important; border-color: var(--border) !important; }
 html.dark .d2h-file-wrapper { border-color: var(--border) !important; }
