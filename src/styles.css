@@ -1254,15 +1254,15 @@ strong { font-weight: 600; }
 .d2h-code-side-emptyplaceholder { background: var(--bg) !important; color: transparent !important; }
 .d2h-ins .d2h-code-line-ctn { background: var(--green-bg) !important; }
 .d2h-del .d2h-code-line-ctn { background: var(--red-bg) !important; }
-.d2h-ins .d2h-code-side-linenumber { background: var(--green-hl) !important; color: var(--green) !important; }
-.d2h-del .d2h-code-side-linenumber { background: var(--red-hl) !important; color: var(--red) !important; }
+.d2h-ins .d2h-code-side-linenumber { background: var(--green-bg) !important; color: var(--green) !important; }
+.d2h-del .d2h-code-side-linenumber { background: var(--red-bg) !important; color: var(--red) !important; }
 .d2h-cntx .d2h-code-side-linenumber { background: var(--bg) !important; color: var(--ink-faint) !important; }
 .d2h-cntx .d2h-code-side-line { background: var(--bg-white) !important; }
 .d2h-ins .d2h-code-side-line { background: var(--green-bg) !important; }
 .d2h-del .d2h-code-side-line { background: var(--red-bg) !important; }
 .d2h-code-linenumber { border-color: var(--border) !important; color: var(--ink-faint) !important; background: var(--bg) !important; }
-.d2h-ins .d2h-code-linenumber { background: var(--green-hl) !important; color: var(--green) !important; }
-.d2h-del .d2h-code-linenumber { background: var(--red-hl) !important; color: var(--red) !important; }
+.d2h-ins .d2h-code-linenumber { background: var(--green-bg) !important; color: var(--green) !important; }
+.d2h-del .d2h-code-linenumber { background: var(--red-bg) !important; color: var(--red) !important; }
 .d2h-code-side-linenumber { border-color: var(--border) !important; color: var(--ink-faint) !important; }
 
 /* Inline highlights in diff — solid blocks spanning adjacent words + gaps */
@@ -1714,11 +1714,13 @@ html.dark .hljs-attr { color: #79c0ff; }
 html.dark .hljs-params { color: var(--ink); }
 html.dark .hljs-meta { color: #79c0ff; }
 /* ── Dark mode: diff2html extras (base styles already use vars) ── */
-/* Line numbers need higher contrast on tinted backgrounds */
+/* Line numbers: muted text, minimal background tint */
 html.dark .d2h-ins .d2h-code-side-linenumber,
-html.dark .d2h-ins .d2h-code-linenumber { color: #7ee890 !important; }
+html.dark .d2h-ins .d2h-code-linenumber { color: var(--ink-faint) !important; background: rgba(46,160,67,0.08) !important; }
 html.dark .d2h-del .d2h-code-side-linenumber,
-html.dark .d2h-del .d2h-code-linenumber { color: #ffa198 !important; }
+html.dark .d2h-del .d2h-code-linenumber { color: var(--ink-faint) !important; background: rgba(248,81,73,0.08) !important; }
+html.dark .d2h-cntx .d2h-code-side-linenumber,
+html.dark .d2h-cntx .d2h-code-linenumber { color: var(--ink-faint) !important; background: var(--bg) !important; }
 
 html.dark .d2h-file-header { background: var(--bg-white) !important; border-color: var(--border) !important; }
 html.dark .d2h-file-wrapper { border-color: var(--border) !important; }
