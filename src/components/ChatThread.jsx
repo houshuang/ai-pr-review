@@ -21,6 +21,7 @@ export function toggleChat() {
 // ── Component ─────────────────────────────────
 export function ChatThread() {
   const [input, setInput] = useState("");
+  const [quotedCode, setQuotedCode] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState("");
   const messagesRef = useRef(null);
@@ -41,21 +42,15 @@ export function ChatThread() {
     }
   }, [threadMessages.length, streamContent]);
 
-  // Focus input when opened, pre-fill with selected text
+  // Focus input when opened, capture selected text as quoted block
   useEffect(() => {
     if (chatOpen.value && inputRef.current) {
       setTimeout(() => {
         if (chatSelectedText.value) {
-          setInput(`> ${chatSelectedText.value}\n\n`);
+          setQuotedCode(chatSelectedText.value);
           chatSelectedText.value = "";
-          // Resize textarea
-          inputRef.current.style.height = "auto";
-          inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
         }
         inputRef.current.focus();
-        // Move cursor to end
-        const len = inputRef.current.value.length;
-        inputRef.current.setSelectionRange(len, len);
       }, 50);
     }
   }, [chatOpen.value, sectionId]);
@@ -82,16 +77,23 @@ export function ChatThread() {
   async function sendMessage() {
     if (!input.trim() || streaming) return;
 
+    // Build the full message: quoted code (if any) + user's question
+    const userText = input.trim();
+    const fullContent = quotedCode
+      ? `Regarding this code:\n\`\`\`\n${quotedCode}\n\`\`\`\n\n${userText}`
+      : userText;
+
     const msg = {
       id: `msg-${Date.now()}`,
       role: "user",
-      content: input.trim(),
+      content: fullContent,
       sectionId,
       timestamp: new Date().toISOString(),
     };
 
     chatMessages.value = [...chatMessages.value, msg];
     setInput("");
+    setQuotedCode("");
     setStreaming(true);
     setStreamContent("");
 
@@ -238,6 +240,12 @@ export function ChatThread() {
       </div>
 
       <div class="chat-thread-input-area">
+        {quotedCode && (
+          <div class="chat-quoted-code">
+            <pre>{quotedCode}</pre>
+            <button class="chat-quoted-dismiss" onClick={() => setQuotedCode("")}>&times;</button>
+          </div>
+        )}
         <div class="chat-thread-input-row">
           <textarea
             ref={inputRef}
@@ -255,7 +263,7 @@ export function ChatThread() {
             }}
             onFocus={() => (window.__chatInputActive = true)}
             onBlur={() => (window.__chatInputActive = false)}
-            placeholder="Ask about this section..."
+            placeholder={quotedCode ? "Ask about this code..." : "Ask about this section..."}
             rows="1"
           />
           <button

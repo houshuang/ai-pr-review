@@ -2547,6 +2547,24 @@ body {
 }
 @keyframes chatCursorBlink { 50% { opacity: 0; } }
 
+/* Quoted code block */
+.chat-quoted-code {
+  margin: 0 14px 0; padding: 0; position: relative;
+}
+.chat-quoted-code pre {
+  background: #1a1a1a; color: #c8c8c8; font-family: var(--mono); font-size: 11px;
+  line-height: 1.5; padding: 8px 28px 8px 10px; border-radius: 8px;
+  margin: 0; max-height: 80px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+}
+.chat-quoted-code + .chat-thread-input-row { margin-top: 6px; }
+.chat-quoted-dismiss {
+  position: absolute; top: 4px; right: 4px;
+  width: 18px; height: 18px; border: none; background: rgba(255,255,255,0.15);
+  color: #999; font-size: 12px; border-radius: 4px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+}
+.chat-quoted-dismiss:hover { background: rgba(255,255,255,0.25); color: #fff; }
+
 /* Input area */
 .chat-thread-input-area {
   padding: 10px 14px; border-top: 1px solid var(--border-light); flex-shrink: 0;
