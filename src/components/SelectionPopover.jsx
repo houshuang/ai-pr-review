@@ -1,6 +1,7 @@
 import { h } from "preact";
 import { useState, useEffect, useRef } from "preact/hooks";
 import { chatOpen, chatSelectedText } from "./ChatThread";
+import { data, currentSectionIndex } from "../state";
 
 export function SelectionPopover() {
   const [pos, setPos] = useState(null);
@@ -42,6 +43,17 @@ export function SelectionPopover() {
   }, []);
 
   function handleClick() {
+    // Detect section from the selection
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) {
+      const el = sel.anchorNode?.parentElement?.closest?.(".review-section, [data-split-section]");
+      if (el) {
+        const sections = data.value?.walkthrough?.sections || [];
+        const id = el.id?.replace("section-", "") || el.dataset?.splitSection;
+        const idx = sections.findIndex(s => s.id === id);
+        if (idx >= 0) currentSectionIndex.value = idx;
+      }
+    }
     chatSelectedText.value = text;
     chatOpen.value = true;
     setPos(null);

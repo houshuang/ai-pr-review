@@ -1,7 +1,9 @@
 import { h } from "preact";
+import { useRef } from "preact/hooks";
 import { data, reviewState, setReviewed } from "../../state";
 import { esc, md } from "../../utils";
 import { getActionItems } from "../../keyboard";
+import { useMermaid } from "../../mermaid";
 import { ActionPanel } from "../ActionPanel";
 import { Header } from "../Header";
 import { Section } from "../Section";
@@ -9,6 +11,8 @@ import { BottomBar } from "../BottomBar";
 import { ReviewModal } from "../ReviewModal";
 
 export function SplitLayout({ callbacks }) {
+  const contentRef = useRef();
+  useMermaid(contentRef);
   const d = data.value;
   const wt = d.walkthrough;
   const meta = d.meta;
@@ -29,7 +33,7 @@ export function SplitLayout({ callbacks }) {
             <Header />
           </div>
         </div>
-        <div class="split-panes">
+        <div class="split-panes" ref={contentRef}>
           <div class="split-left">
             <div class="split-section" data-split-section="overview">
               <div class="narrative" dangerouslySetInnerHTML={{ __html: md(wt.overview) }}></div>

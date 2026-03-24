@@ -10,10 +10,37 @@ export const chatMessages = signal([]); // [{id, role, content, sectionId, times
 export const chatSelectedText = signal(""); // text selected when chat was opened
 
 export function toggleChat() {
-  // Capture selected text before opening
+  // Capture selected text and detect section before opening
   if (!chatOpen.value) {
     const sel = window.getSelection();
     chatSelectedText.value = sel ? sel.toString().trim() : "";
+
+    // Detect which section the selection or viewport is in
+    const sections = data.value?.walkthrough?.sections || [];
+    if (sections.length > 0) {
+      // Try from selection context first
+      let foundIdx = -1;
+      if (sel && !sel.isCollapsed) {
+        const el = sel.anchorNode?.parentElement?.closest?.(".review-section, [data-split-section]");
+        if (el) {
+          const id = el.id?.replace("section-", "") || el.dataset?.splitSection;
+          foundIdx = sections.findIndex(s => s.id === id);
+        }
+      }
+      // Fall back to topmost visible section
+      if (foundIdx < 0) {
+        const allSections = document.querySelectorAll(".review-section");
+        for (const el of allSections) {
+          const rect = el.getBoundingClientRect();
+          if (rect.top < window.innerHeight / 2 && rect.bottom > 0) {
+            const id = el.id?.replace("section-", "");
+            const idx = sections.findIndex(s => s.id === id);
+            if (idx >= 0) foundIdx = idx;
+          }
+        }
+      }
+      if (foundIdx >= 0) currentSectionIndex.value = foundIdx;
+    }
   }
   chatOpen.value = !chatOpen.value;
 }
