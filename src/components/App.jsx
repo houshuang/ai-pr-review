@@ -167,8 +167,13 @@ export function App() {
     const handleKeyboard = (e) => {
       if (!data.value) return;
 
-      // Escape closes action panel
+      // Escape closes overlays: chat first, then action panel
       if (e.key === "Escape") {
+        if (chatOpen.value) {
+          chatOpen.value = false;
+          e.preventDefault();
+          return;
+        }
         if (actionPanelOpen.value) {
           actionPanelOpen.value = false;
           e.preventDefault();
@@ -197,7 +202,7 @@ export function App() {
       }
 
       // Direct shortcuts (work without panel open too)
-      const directKeys = { a: true, j: true, k: true, n: true, r: true, e: true, "?": true };
+      const directKeys = { a: true, j: true, k: true, n: true, r: true, e: true, d: true, s: true, u: true, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "?": true };
       if (directKeys[e.key]) {
         const items = getActionItems(callbacks);
         const match = items.find((item) => item.key === e.key);
