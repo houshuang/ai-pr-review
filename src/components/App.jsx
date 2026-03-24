@@ -45,9 +45,8 @@ export function App() {
 
   // Dark mode effect
   useEffect(() => {
-    const isDark = darkMode.value || viewMode.value === "developer";
-    document.documentElement.classList.toggle("dark", isDark);
-  }, [darkMode.value, viewMode.value]);
+    document.documentElement.classList.toggle("dark", darkMode.value);
+  }, [darkMode.value]);
 
   // View mode class effect
   useEffect(() => {
