@@ -615,7 +615,7 @@ Generate the walkthrough JSON. Important reminders:
   log("INFO", `Diff size: ${(focusedDiff.length / 1024).toFixed(1)}KB${largePRSummary ? ` (focused from ${(prData.diff.length / 1024).toFixed(1)}KB)` : ""}`);
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-6-20250620",
     max_tokens: 16000,
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],

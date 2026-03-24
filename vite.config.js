@@ -154,15 +154,14 @@ function chatMiddleware() {
             let cwd = process.cwd();
             if (projectPath) cwd = projectPath;
 
-            // Stream response via Claude CLI
+            // Run Claude CLI and stream response
             res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-            res.setHeader('Transfer-Encoding', 'chunked');
             res.setHeader('Cache-Control', 'no-cache');
 
             const proc = spawn('claude', [
               '-p', message,
-              '-s', systemPrompt,
-              '--output-format', 'stream-json',
+              '--system-prompt', systemPrompt,
+              '--output-format', 'text',
               '--allowedTools', 'Read,Grep,Glob,Bash(git log:git diff:git show:git blame:ls)',
             ], {
               cwd,
@@ -170,50 +169,21 @@ function chatMiddleware() {
               stdio: ['pipe', 'pipe', 'pipe'],
             });
 
-            let fullContent = '';
-            let buffer = '';
+            let procDone = false;
 
             proc.stdout.on('data', (chunk) => {
-              buffer += chunk.toString();
-              const lines = buffer.split('\n');
-              buffer = lines.pop();
-
-              for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                  const event = JSON.parse(line);
-                  // Extract text from assistant messages
-                  if (event.type === 'assistant' && event.message?.content) {
-                    let text = '';
-                    for (const block of event.message.content) {
-                      if (block.type === 'text') text += block.text;
-                    }
-                    if (text && text.length > fullContent.length) {
-                      const newChunk = text.slice(fullContent.length);
-                      fullContent = text;
-                      res.write(newChunk);
-                    }
-                  }
-                  // Handle result type (final output)
-                  if (event.type === 'result' && event.result) {
-                    const text = typeof event.result === 'string' ? event.result : '';
-                    if (text && text.length > fullContent.length) {
-                      const newChunk = text.slice(fullContent.length);
-                      fullContent = text;
-                      res.write(newChunk);
-                    }
-                  }
-                } catch {}
-              }
+              res.write(chunk);
             });
 
             proc.stderr.on('data', () => {}); // suppress
 
-            proc.on('close', () => {
+            proc.on('close', (code) => {
+              procDone = true;
               res.end();
             });
 
             proc.on('error', (err) => {
+              procDone = true;
               if (!res.headersSent) {
                 res.statusCode = 500;
                 res.end(JSON.stringify({ error: err.message }));
@@ -224,9 +194,11 @@ function chatMiddleware() {
 
             proc.stdin.end();
 
-            // Clean up if client disconnects
-            req.on('close', () => {
-              try { proc.kill(); } catch {}
+            // Clean up if client disconnects (but not if request just finished reading body)
+            res.on('close', () => {
+              if (!procDone) {
+                try { proc.kill(); } catch {}
+              }
             });
           } catch (err) {
             res.statusCode = 400;
