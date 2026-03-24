@@ -238,7 +238,7 @@ export function ChatThread() {
             </div>
             <div
               class="chat-msg-body"
-              dangerouslySetInnerHTML={{ __html: renderContent(msg.content, msg.role) }}
+              dangerouslySetInnerHTML={{ __html: md(msg.content) }}
             />
           </div>
         ))}
@@ -252,7 +252,7 @@ export function ChatThread() {
             </div>
             <div
               class="chat-msg-body"
-              dangerouslySetInnerHTML={{ __html: renderContent(streamContent, "assistant") }}
+              dangerouslySetInnerHTML={{ __html: md(streamContent) }}
             />
           </div>
         )}
@@ -320,6 +320,3 @@ function formatTime(ts) {
   }
 }
 
-function renderContent(content, role) {
-  return md(content);
-}

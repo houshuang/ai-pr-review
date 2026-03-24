@@ -5,9 +5,8 @@ import {
   showComments, hideReviewed, parsedFiles,
   setReviewed, toggleSet, addToSet, saveReviewState, isGitHubPR,
 } from "../state";
-import { renderFileDiff } from "../diff";
 import { getCommentThreads } from "../api";
-import { esc, groupFilesByDirectory, getFileStats } from "../utils";
+import { groupFilesByDirectory, getFileStats } from "../utils";
 import { FileComments } from "./FileComments";
 import { CommentComposer } from "./CommentComposer";
 import { DiffView } from "./DiffView";

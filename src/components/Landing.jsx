@@ -2,7 +2,7 @@ import { h } from "preact";
 import { useState, useCallback } from "preact/hooks";
 import { data, parsedFiles, loadReviewState, applyAutoCollapse } from "../state";
 import { parseDiff } from "../diff";
-import { esc } from "../utils";
+import  from "../utils";
 
 export function Landing() {
   const [url, setUrl] = useState("");

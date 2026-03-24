@@ -231,7 +231,6 @@ async function fetchPRData(prUrl) {
 
   // Fetch the full diff — fall back to local git if GitHub API rejects (too large)
   let diff;
-  let diffSource = "github-api";
   try {
     diff = execSync(
       `gh pr diff ${number} --repo ${owner}/${repo}`,
@@ -241,7 +240,6 @@ async function fetchPRData(prUrl) {
     const errMsg = diffErr.stderr?.toString() || diffErr.message || "";
     if (errMsg.includes("too_large") || errMsg.includes("406")) {
       log("INFO", `GitHub diff API rejected PR (too large). Falling back to local git diff...`);
-      diffSource = "local-git";
       // Use the original CWD (where user ran the command) — likely the repo
       const repoCwd = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
       try {

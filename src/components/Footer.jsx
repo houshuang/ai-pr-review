@@ -1,6 +1,6 @@
 import { h } from "preact";
 import { data } from "../state";
-import { esc } from "../utils";
+import  from "../utils";
 
 export function Footer() {
   const d = data.value;

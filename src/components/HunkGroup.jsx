@@ -6,7 +6,7 @@ import {
   hideReviewed,
 } from "../state";
 import { filterFileToRanges } from "../diff";
-import { esc, getFileStats } from "../utils";
+import { esc } from "../utils";
 import { DiffView } from "./DiffView";
 import { FileComments } from "./FileComments";
 import { CommentComposer } from "./CommentComposer";

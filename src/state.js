@@ -7,7 +7,6 @@ export const reviewState = signal({});
 export const diffViewMode = signal("side-by-side");
 export const collapsedSections = signal(new Set());
 export const collapsedHunks = signal(new Set());
-export const pendingComments = signal([]);
 export const showComments = signal(true);
 export const hideReviewed = signal(false);
 export const showFullFile = signal(new Set());
@@ -92,11 +91,6 @@ export function saveReviewState() {
 // Auto-persist viewMode and darkMode
 effect(() => { localStorage.setItem("review-tool-view", viewMode.value); });
 
-// Expose for visual testing
-if (typeof window !== "undefined") {
-  window.__setView = (v) => { viewMode.value = v; };
-  window.__setDark = (d) => { darkMode.value = d; };
-}
 effect(() => { localStorage.setItem("review-tool-dark", String(darkMode.value)); });
 
 // ─── Auto-collapse ───────────────────────────────────

@@ -281,9 +281,6 @@ body {
   font-weight: 600;
 }
 
-/* ─── Old toolbar (hidden — replaced by bottom bar + cmd palette) ─── */
-.toolbar { display: none; }
-
 /* ─── TOC ─── */
 .toc {
   background: var(--bg-white);
@@ -568,6 +565,7 @@ strong { font-weight: 600; }
 .callout.warning { background: var(--orange-bg); }
 .callout.pattern { background: var(--green-bg); }
 .callout.tradeoff { background: var(--purple-bg); }
+.callout.question { background: var(--blue-bg); }
 
 .callout-label {
   font-size: 12px;
@@ -580,6 +578,7 @@ strong { font-weight: 600; }
 .callout.warning .callout-label { color: var(--orange); }
 .callout.pattern .callout-label { color: var(--green); }
 .callout.tradeoff .callout-label { color: var(--purple); }
+.callout.question .callout-label { color: var(--blue); }
 
 .callout p { color: var(--ink-mid); margin-bottom: 0; }
 
@@ -784,7 +783,7 @@ strong { font-weight: 600; }
 .hunk-annotation-inline p:last-child { margin-bottom: 0; }
 .hunk-annotation pre,
 .hunk-annotation-inline pre {
-  background: rgba(255,255,255,0.5);
+  background: var(--bg);
   border: 1px solid var(--border-light);
   border-radius: 6px;
   padding: 12px 16px;
@@ -1306,7 +1305,6 @@ strong { font-weight: 600; }
 .diagram-container, .callout { animation: fadeUp 0.4s ease both; }
 
 /* ─── Keyboard shortcuts hint (in bottom bar context) ─── */
-.toolbar-hint { display: none; }
 
 kbd {
   font-family: var(--mono);
@@ -1672,7 +1670,7 @@ html.dark {
 html.dark .bottom-bar { background: #0d1117; border-color: var(--border); }
 html.dark .action-panel { background: var(--bg-white); border-color: var(--border); }
 html.dark .action-panel-item kbd { background: var(--bg); border-color: var(--border); }
-html.dark .cmd-item:hover { background: var(--bg-hover); }
+
 
 html.dark .btn { background: var(--bg-white); border-color: var(--border); }
 html.dark .btn.active { background: var(--ink); color: var(--bg); }
@@ -1731,7 +1729,6 @@ html.dark .d2h-diff-table { border-color: var(--border) !important; }
 html.dark .d2h-diff-tbody tr { border-color: var(--border) !important; }
 html.dark .d2h-code-side-line { border-color: var(--border) !important; }
 html.dark .d2h-code-line { border-color: var(--border) !important; }
-html.dark .d2h-code-line-ctn { color: var(--ink); }
 
 /* ═══════════════════════════════════════════════════════
    VIEW: SIDEBAR

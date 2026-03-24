@@ -5,7 +5,7 @@ import {
   reviewState, collapsedSections, hideReviewed,
   setReviewed, toggleSet, addToSet, saveReviewState,
 } from "../state";
-import { md, esc } from "../utils";
+import { md } from "../utils";
 import { Callout } from "./Callout";
 import { HunkGroup } from "./HunkGroup";
 

@@ -1,7 +1,7 @@
 import { h } from "preact";
 import { useCallback } from "preact/hooks";
 import { data, reviewState, getEstimatedReadTime, getCommentCountForSection, getFileCoverage } from "../state";
-import { esc } from "../utils";
+import  from "../utils";
 
 export function TOC() {
   const d = data.value;

@@ -1,7 +1,7 @@
 import { h } from "preact";
 import { useRef } from "preact/hooks";
 import { data } from "../state";
-import { esc, md } from "../utils";
+import { md } from "../utils";
 import { useMermaid } from "../mermaid";
 
 export function Overview() {
