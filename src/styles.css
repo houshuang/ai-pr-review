@@ -1712,6 +1712,12 @@ html.dark .hljs-attr { color: #79c0ff; }
 html.dark .hljs-params { color: var(--ink); }
 html.dark .hljs-meta { color: #79c0ff; }
 /* ── Dark mode: diff2html extras (base styles already use vars) ── */
+/* Line numbers need higher contrast on tinted backgrounds */
+html.dark .d2h-ins .d2h-code-side-linenumber,
+html.dark .d2h-ins .d2h-code-linenumber { color: #7ee890 !important; }
+html.dark .d2h-del .d2h-code-side-linenumber,
+html.dark .d2h-del .d2h-code-linenumber { color: #ffa198 !important; }
+
 html.dark .d2h-file-header { background: var(--bg-white) !important; border-color: var(--border) !important; }
 html.dark .d2h-file-wrapper { border-color: var(--border) !important; }
 html.dark .d2h-info { background: var(--bg-white) !important; color: var(--ink-faint) !important; border-color: var(--border) !important; }
