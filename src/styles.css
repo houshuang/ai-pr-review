@@ -1249,7 +1249,9 @@ strong { font-weight: 600; }
 .d2h-del.d2h-change { background: var(--red-bg) !important; }
 
 /* diff2html overrides — all use CSS vars so dark mode inherits automatically */
-.d2h-empty-placeholder { background: var(--bg) !important; border-color: var(--border) !important; }
+.d2h-empty-placeholder,
+.d2h-emptyplaceholder { background: var(--bg) !important; border-color: var(--border) !important; }
+.d2h-code-side-emptyplaceholder { background: var(--bg) !important; color: transparent !important; }
 .d2h-ins .d2h-code-line-ctn { background: var(--green-bg) !important; }
 .d2h-del .d2h-code-line-ctn { background: var(--red-bg) !important; }
 .d2h-ins .d2h-code-side-linenumber { background: var(--green-hl) !important; color: var(--green) !important; }
