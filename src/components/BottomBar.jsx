@@ -6,7 +6,7 @@ import {
 import { exportStaticHtml } from "../api";
 import { toggleChat, chatOpen } from "./ChatThread";
 
-export function BottomBar({ onApprove, onRequestChanges }) {
+export function BottomBar() {
   const progress = getProgress();
   const commentCount = data.value?.comments?.length || 0;
   const gh = isGitHubPR();
@@ -52,7 +52,7 @@ export function BottomBar({ onApprove, onRequestChanges }) {
       >
         Unified
       </div>
-      <div className="bar-seg bar-clickable" id="btn-toggle-comments" onClick={handleToggleComments}>
+      <div className={`bar-seg bar-clickable ${showComments.value ? "bar-on" : ""}`} id="btn-toggle-comments" onClick={handleToggleComments}>
         &#x1f4ac; {commentCount}
       </div>
       <div className="bar-seg bar-clickable" onClick={handleExport} title="Export static HTML (p)">
@@ -63,12 +63,12 @@ export function BottomBar({ onApprove, onRequestChanges }) {
       </div>
       <div className="bar-right">
         {gh && (
-          <div className="bar-seg bar-green bar-clickable" id="btn-approve" onClick={onApprove}>
+          <div className="bar-seg bar-green bar-clickable" id="btn-approve" onClick={() => window.__openReviewModal?.("APPROVE", "Approve this PR")}>
             &#x2713; Approve
           </div>
         )}
         {gh && (
-          <div className="bar-seg bar-red bar-clickable" id="btn-request-changes" onClick={onRequestChanges}>
+          <div className="bar-seg bar-red bar-clickable" id="btn-request-changes" onClick={() => window.__openReviewModal?.("REQUEST_CHANGES", "Request changes")}>
             &#x2715; Changes
           </div>
         )}
