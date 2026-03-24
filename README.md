@@ -103,14 +103,14 @@ This fetches the PR, generates a walkthrough with Claude, and opens it in your b
 
 ### Navigation and progress
 
-- **Keyboard-driven** — `j`/`k` navigate sections, `r` marks reviewed, `n` jumps to next unreviewed, `?` shows all shortcuts
+- **Keyboard-driven** — `j`/`k` navigate sections, `r` marks reviewed, `n` jumps to next unreviewed, `1`-`6` switch views, `?` shows all shortcuts
 - **Review progress** — track which sections and files you've reviewed
 - **Architecture diagrams** — auto-generated Mermaid diagrams showing the structural changes
-- **Dark mode** (`d`)
+- **Dark mode** — respects OS preference, toggle with `d`. Full dark theme across all views and diff rendering.
 
 ### AI chat
 
-Ask questions about any section — "What happens if this check fails?", "Why was this approach chosen over X?" The chat runs Claude Code with read access to the repo, so it can look up actual source files and git history to give informed answers.
+Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions about any section. The chat uses the Anthropic API with the section's narrative, code annotations, and callouts as context — responses stream in ~2-3 seconds. Example questions: "What happens if this check fails?", "Why was this approach chosen over X?"
 
 ### Smart generation
 
