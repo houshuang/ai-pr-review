@@ -91,6 +91,12 @@ export function saveReviewState() {
 
 // Auto-persist viewMode and darkMode
 effect(() => { localStorage.setItem("review-tool-view", viewMode.value); });
+
+// Expose for visual testing
+if (typeof window !== "undefined") {
+  window.__setView = (v) => { viewMode.value = v; };
+  window.__setDark = (d) => { darkMode.value = d; };
+}
 effect(() => { localStorage.setItem("review-tool-dark", String(darkMode.value)); });
 
 // ─── Auto-collapse ───────────────────────────────────

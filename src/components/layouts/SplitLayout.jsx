@@ -67,7 +67,7 @@ export function SplitLayout({ callbacks }) {
               {wt.architecture_diagram && (
                 <div class="diagram-container">
                   <div class="diagram-label">Architecture</div>
-                  <div class="mermaid-source">{esc(wt.architecture_diagram)}</div>
+                  <div class="mermaid-source">{wt.architecture_diagram}</div>
                 </div>
               )}
             </div>

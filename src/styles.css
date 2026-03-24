@@ -1645,31 +1645,31 @@ kbd {
    DARK MODE
    ═══════════════════════════════════════════════════════ */
 html.dark {
-  --bg: #191919;
-  --bg-white: #222222;
-  --bg-hover: #2a2a2a;
-  --ink: #e0ddd5;
-  --ink-mid: #a0a09c;
-  --ink-faint: #6b6b68;
-  --border: #333333;
-  --border-light: #2a2a2a;
+  --bg: #161b22;
+  --bg-white: #1c2128;
+  --bg-hover: #252c35;
+  --ink: #d4d4d4;
+  --ink-mid: #8b949e;
+  --ink-faint: #636e7b;
+  --border: #30363d;
+  --border-light: #21262d;
   --green: #3fb950;
-  --green-bg: rgba(46,160,67,0.15);
-  --green-hl: rgba(46,160,67,0.4);
-  --green-dim: rgba(46,160,67,0.06);
+  --green-bg: rgba(46,160,67,0.10);
+  --green-hl: rgba(46,160,67,0.20);
+  --green-dim: rgba(46,160,67,0.04);
   --red: #f85149;
-  --red-bg: rgba(248,81,73,0.15);
-  --red-hl: rgba(248,81,73,0.4);
-  --blue: #7aade0;
-  --blue-bg: rgba(122,173,224,0.08);
-  --purple: #b088d4;
-  --purple-bg: rgba(176,136,212,0.08);
-  --orange: #dda04a;
-  --orange-bg: rgba(221,160,74,0.08);
-  --reviewed-bg: rgba(106,173,120,0.06);
+  --red-bg: rgba(248,81,73,0.10);
+  --red-hl: rgba(248,81,73,0.20);
+  --blue: #79c0ff;
+  --blue-bg: rgba(121,192,255,0.08);
+  --purple: #bc8cff;
+  --purple-bg: rgba(188,140,255,0.08);
+  --orange: #e3b341;
+  --orange-bg: rgba(227,179,65,0.08);
+  --reviewed-bg: rgba(46,160,67,0.04);
 }
 
-html.dark .bottom-bar { background: #1a1a1a; border-color: var(--border); }
+html.dark .bottom-bar { background: #0d1117; border-color: var(--border); }
 html.dark .action-panel { background: var(--bg-white); border-color: var(--border); }
 html.dark .action-panel-item kbd { background: var(--bg); border-color: var(--border); }
 html.dark .cmd-item:hover { background: var(--bg-hover); }
@@ -1687,7 +1687,9 @@ html.dark .diagram-container,
 html.dark .comment-composer { background: var(--bg-white); }
 
 html.dark .narrative code,
-html.dark .comment-body code { background: var(--bg-hover); }
+html.dark .comment-body code { background: var(--bg-hover); border-color: var(--border); }
+
+html.dark .diagram-container { border-color: var(--border); }
 
 html.dark .narrative pre { background: #111; }
 
