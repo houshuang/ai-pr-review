@@ -14,7 +14,11 @@ export const showFullFile = signal(new Set());
 export const lineSelection = signal({ file: null, startLine: null, endLine: null, side: "RIGHT" });
 export const fileContentCache = new Map(); // not reactive, just a cache
 export const viewMode = signal(localStorage.getItem("review-tool-view") || "editorial");
-export const darkMode = signal(localStorage.getItem("review-tool-dark") === "true");
+export const darkMode = signal(
+  localStorage.getItem("review-tool-dark") !== null
+    ? localStorage.getItem("review-tool-dark") === "true"
+    : window.matchMedia("(prefers-color-scheme: dark)").matches
+);
 export const currentSectionIndex = signal(0);
 export const actionPanelOpen = signal(false);
 
