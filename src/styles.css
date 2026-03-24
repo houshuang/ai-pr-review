@@ -1712,7 +1712,7 @@ html.dark .hljs-meta { color: #79c0ff; }
 html.dark .d2h-cntx .d2h-code-side-line { background: var(--bg) !important; }
 html.dark .d2h-ins .d2h-code-side-line { background: var(--green-bg) !important; }
 html.dark .d2h-del .d2h-code-side-line { background: var(--red-bg) !important; }
-html.dark .d2h-empty-placeholder { background: var(--bg-white) !important; }
+html.dark .d2h-empty-placeholder { background: var(--bg) !important; border-color: var(--border) !important; }
 html.dark .d2h-info { background: var(--bg-white) !important; color: var(--ink-faint) !important; border-color: var(--border) !important; }
 html.dark .d2h-ins { background: var(--green-bg) !important; }
 html.dark .d2h-del { background: var(--red-bg) !important; }
@@ -1721,6 +1721,14 @@ html.dark .d2h-del .d2h-code-line-ctn { background: var(--red-bg) !important; }
 html.dark .d2h-ins .d2h-code-side-linenumber { background: var(--green-bg) !important; }
 html.dark .d2h-del .d2h-code-side-linenumber { background: var(--red-bg) !important; }
 html.dark .d2h-cntx .d2h-code-side-linenumber { background: var(--bg-white) !important; }
+
+/* Fix diff2html borders and file headers in dark mode */
+html.dark .d2h-file-header { background: var(--bg-white) !important; border-color: var(--border) !important; }
+html.dark .d2h-file-wrapper { border-color: var(--border) !important; }
+html.dark .d2h-diff-table { border-color: var(--border) !important; }
+html.dark .d2h-diff-tbody tr { border-color: var(--border) !important; }
+html.dark .d2h-code-side-line { border-color: var(--border) !important; }
+html.dark .d2h-code-line { border-color: var(--border) !important; }
 
 /* ═══════════════════════════════════════════════════════
    VIEW: SIDEBAR
@@ -1874,8 +1882,10 @@ html.dark .sidebar-panel { background: #1a1a1a; }
 
 .focus-content {
   flex: 1;
-  padding: 2.5rem 2rem;
+  padding: 2.5rem 3rem;
+  max-width: 100%;
 }
+.layout-focus .page-container { max-width: 100%; }
 
 .focus-bottom-nav {
   display: flex;
