@@ -2547,6 +2547,24 @@ body {
 }
 @keyframes chatCursorBlink { 50% { opacity: 0; } }
 
+/* Selection popover */
+.selection-popover {
+  position: absolute; z-index: 1001; transform: translateX(-50%);
+  animation: fadeUp 0.12s ease;
+}
+.selection-popover-btn {
+  background: var(--ink); color: var(--bg-white); border: none;
+  padding: 5px 12px; border-radius: 6px; font-size: 12px;
+  font-weight: 600; font-family: var(--sans); cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  white-space: nowrap; display: flex; align-items: center; gap: 4px;
+}
+.selection-popover-btn:hover { opacity: 0.85; }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
 /* Quoted code block */
 .chat-quoted-code {
   margin: 0 14px 0; padding: 0; position: relative;

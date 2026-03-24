@@ -14,6 +14,7 @@ import { SplitLayout } from "./layouts/SplitLayout";
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { Landing } from "./Landing";
 import { ChatThread, chatOpen, toggleChat } from "./ChatThread";
+import { SelectionPopover } from "./SelectionPopover";
 
 function getWalkthroughUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -231,6 +232,7 @@ export function App() {
     <>
       <Layout callbacks={callbacks} />
       <ChatThread />
+      <SelectionPopover />
     </>
   );
 }

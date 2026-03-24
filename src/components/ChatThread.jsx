@@ -294,10 +294,5 @@ function formatTime(ts) {
 }
 
 function renderContent(content, role) {
-  if (role === "assistant") return md(content);
-  return content
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\n/g, "<br>");
+  return md(content);
 }
