@@ -130,7 +130,7 @@ export function ChatThread() {
       <div class="chat-thread-header">
         <div class="chat-thread-header-left">
           <div class="chat-thread-icon">C</div>
-          <div>
+          <div style="min-width:0;overflow:hidden">
             <div class="chat-thread-title">{currentSection?.title || "Thread"}</div>
             <div class="chat-thread-subtitle">
               {sectionId ? `Section ${currentSectionIndex.value + 1}` : "Select a section"}

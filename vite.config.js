@@ -1,7 +1,10 @@
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
-import { execSync, spawn } from 'child_process';
-import { readFileSync } from 'fs';
+import { execSync } from 'child_process';
+import { readFileSync, existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import Anthropic from '@anthropic-ai/sdk';
 
 // Middleware to proxy GitHub API calls through `gh` CLI
 function ghApiProxy() {
@@ -103,7 +106,21 @@ function exportEndpoint() {
   };
 }
 
-// Middleware to handle AI chat via Claude Code CLI
+// Load API key from env or .env file
+function loadChatApiKey() {
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+  const __dir = dirname(fileURLToPath(import.meta.url));
+  const envPath = resolve(__dir, '.env');
+  if (existsSync(envPath)) {
+    for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+      const m = line.match(/^ANTHROPIC_(?:API_)?KEY=(.+)$/);
+      if (m) return m[1].trim();
+    }
+  }
+  return null;
+}
+
+// Middleware to handle AI chat via Anthropic API (streaming)
 function chatMiddleware() {
   return {
     name: 'chat-middleware',
@@ -117,18 +134,20 @@ function chatMiddleware() {
 
         let body = '';
         req.on('data', (chunk) => (body += chunk));
-        req.on('end', () => {
+        req.on('end', async () => {
           try {
             const {
-              message, history, sectionId, sectionTitle,
+              message, history, sectionTitle,
               sectionNarrative, sectionFiles, prTitle, prUrl, prOverview,
-              projectPath,
             } = JSON.parse(body);
 
-            // Build conversation context for Claude
-            const historyText = (history || [])
-              .map(m => `<${m.role}>\n${m.content}\n</${m.role}>`)
-              .join('\n\n');
+            const apiKey = loadChatApiKey();
+            if (!apiKey) {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: 'No ANTHROPIC_API_KEY configured' }));
+              return;
+            }
 
             const systemPrompt = [
               'You are an AI code review assistant embedded in a PR walkthrough tool.',
@@ -140,70 +159,57 @@ function chatMiddleware() {
               sectionTitle ? `## Current Section: ${sectionTitle}` : '',
               sectionNarrative ? `## Section Narrative\n${sectionNarrative}` : '',
               sectionFiles?.length ? `## Files in this section\n${sectionFiles.join('\n')}` : '',
-              historyText ? `## Conversation history\n${historyText}` : '',
               '',
               '## Instructions',
               '- Answer questions about the code changes in this PR section',
-              '- When referencing code, cite specific files and line numbers',
-              '- Use tools to explore the codebase, read source files, and check git history',
+              '- When referencing code, cite specific files and line numbers from the narrative',
               '- Keep responses concise and actionable — this is a review context',
-              '- Format with markdown: code blocks, bold, lists',
+              '- Format with markdown: code blocks, bold, lists, tables',
             ].filter(Boolean).join('\n');
 
-            // Determine working directory
-            let cwd = process.cwd();
-            if (projectPath) cwd = projectPath;
+            // Build messages from conversation history
+            const messages = [];
+            for (const m of (history || []).slice(-20)) {
+              if (m.role === 'user' || m.role === 'assistant') {
+                messages.push({ role: m.role, content: m.content });
+              }
+            }
+            // Replace last user message (it's the current one) or add it
+            if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
+              messages[messages.length - 1].content = message;
+            } else {
+              messages.push({ role: 'user', content: message });
+            }
 
-            // Run Claude CLI and stream response
             res.setHeader('Content-Type', 'text/plain; charset=utf-8');
             res.setHeader('Cache-Control', 'no-cache');
 
-            const proc = spawn('claude', [
-              '-p', message,
-              '--system-prompt', systemPrompt,
-              '--output-format', 'text',
-              '--allowedTools', 'Read,Grep,Glob,Bash(git log:git diff:git show:git blame:ls)',
-            ], {
-              cwd,
-              env: { ...process.env, TERM: 'dumb' },
-              stdio: ['pipe', 'pipe', 'pipe'],
+            const client = new Anthropic({ apiKey });
+            const stream = await client.messages.stream({
+              model: 'claude-sonnet-4-6',
+              max_tokens: 4096,
+              system: systemPrompt,
+              messages,
             });
 
-            let procDone = false;
+            let aborted = false;
+            res.on('close', () => { aborted = true; stream.abort(); });
 
-            proc.stdout.on('data', (chunk) => {
-              res.write(chunk);
-            });
-
-            proc.stderr.on('data', () => {}); // suppress
-
-            proc.on('close', (code) => {
-              procDone = true;
-              res.end();
-            });
-
-            proc.on('error', (err) => {
-              procDone = true;
-              if (!res.headersSent) {
-                res.statusCode = 500;
-                res.end(JSON.stringify({ error: err.message }));
-              } else {
-                res.end();
+            for await (const event of stream) {
+              if (aborted) break;
+              if (event.type === 'content_block_delta' && event.delta?.text) {
+                res.write(event.delta.text);
               }
-            });
-
-            proc.stdin.end();
-
-            // Clean up if client disconnects (but not if request just finished reading body)
-            res.on('close', () => {
-              if (!procDone) {
-                try { proc.kill(); } catch {}
-              }
-            });
+            }
+            res.end();
           } catch (err) {
-            res.statusCode = 400;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ error: err.message }));
+            if (!res.headersSent) {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: err.message }));
+            } else {
+              res.end();
+            }
           }
         });
       });

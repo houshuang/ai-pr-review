@@ -7,17 +7,44 @@ export function esc(str) {
     .replace(/"/g, "&quot;");
 }
 
+function renderTable(block) {
+  const rows = block.trim().split("\n").filter(r => r.trim());
+  if (rows.length < 2) return block;
+  const parseRow = (r) => r.split("|").map(c => c.trim()).filter((_, i, a) => i > 0 && i < a.length);
+  const headers = parseRow(rows[0]);
+  // Skip separator row (row[1])
+  const bodyRows = rows.slice(2);
+  let html = '<table class="chat-table"><thead><tr>';
+  for (const h of headers) html += `<th>${h}</th>`;
+  html += "</tr></thead><tbody>";
+  for (const row of bodyRows) {
+    html += "<tr>";
+    for (const cell of parseRow(row)) html += `<td>${cell}</td>`;
+    html += "</tr>";
+  }
+  html += "</tbody></table>";
+  return html;
+}
+
 export function md(text) {
   if (!text) return "";
   const codeBlocks = [];
+  const tables = [];
   let result = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
+    // Protect code blocks
     .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
       const i = codeBlocks.length;
       codeBlocks.push(`<pre><code${lang ? ` class="language-${lang}"` : ""}>${code.trim()}</code></pre>`);
       return `\x00CB${i}\x00`;
+    })
+    // Protect tables (lines starting with |)
+    .replace(/(^\|.+\|$\n?){2,}/gm, (match) => {
+      const i = tables.length;
+      tables.push(renderTable(match));
+      return `\x00TB${i}\x00`;
     })
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
@@ -31,7 +58,8 @@ export function md(text) {
     .replace(/^(?!<[huplo])(.+)$/gm, (_, line) =>
       line.trim() ? `<p>${line}</p>` : ""
     )
-    .replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[i]);
+    .replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[i])
+    .replace(/\x00TB(\d+)\x00/g, (_, i) => tables[i]);
   return result;
 }
 

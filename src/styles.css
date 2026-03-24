@@ -2462,7 +2462,7 @@ body {
   padding: 3px 9px; border-radius: 6px; font-size: 10px;
   font-weight: 500; display: inline-flex; align-items: center; gap: 4px; border: 1px solid;
 }
-.chat-ctx-section { background: var(--blue-bg); border-color: rgba(82,125,165,0.2); color: var(--blue); }
+.chat-ctx-section { background: var(--blue-bg); border-color: rgba(82,125,165,0.2); color: var(--blue); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-ctx-pr { background: var(--green-dim); border-color: rgba(26,127,55,0.2); color: var(--green); }
 .chat-ctx-repo { background: var(--orange-bg); border-color: rgba(199,125,46,0.2); color: var(--orange); }
 .chat-ctx-tools { background: var(--purple-bg); border-color: rgba(144,101,176,0.2); color: var(--purple); }
@@ -2515,6 +2515,10 @@ body {
 }
 .chat-msg-body ul, .chat-msg-body ol { padding-left: 18px; margin: 4px 0; }
 .chat-msg-body strong { color: var(--ink); }
+.chat-msg-body .chat-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+.chat-msg-body .chat-table th { text-align: left; font-weight: 600; padding: 4px 8px; border-bottom: 2px solid var(--border); color: var(--ink-mid); font-size: 11px; }
+.chat-msg-body .chat-table td { padding: 4px 8px; border-bottom: 1px solid var(--border-light); }
+.chat-msg-body .chat-table tr:last-child td { border-bottom: none; }
 
 /* Typing indicator */
 .chat-typing {
