@@ -1,144 +1,196 @@
-# AI PR Review Tool
+# AI PR Review
 
-An AI-powered interactive PR walkthrough generator and reviewer. Uses Claude to analyze pull requests and generate structured, narrative walkthroughs with inline code annotations — then presents them in an interactive web UI for reviewing.
+An AI-powered code review tool that turns pull requests into interactive, narrated walkthroughs. Instead of reading diffs top-to-bottom, you get a structured explanation of *what changed* and *why* — with architecture diagrams, annotated code, and the ability to ask questions about any section.
 
-## What it does
+<!-- TODO: screenshot or video -->
+![Screenshot](docs/screenshot.png)
 
-1. **Generates** a structured walkthrough from a GitHub PR (or local diff) using Claude
-2. **Renders** it as an interactive web app with syntax-highlighted diffs, inline annotations, architecture diagrams, and review progress tracking
-3. **Integrates** with GitHub — post line comments, approve or request changes, all from the review UI
+## The problem
 
-## Prerequisites
+Reading a 30-file PR is hard. You see lines added and removed, but not the *story* — which changes are foundational, which are mechanical follow-through, and how the pieces connect. Good PR authors write descriptions, but the description and the diff are separate experiences.
 
-- **Node.js** 18+
-- **pnpm** (or npm/yarn)
-- **GitHub CLI** (`gh`) — authenticated with `gh auth login`
-- **Anthropic API key** — set as `ANTHROPIC_API_KEY` environment variable or in a `.env` file in the project root
+This tool bridges them. It uses Claude to analyze the full PR — diffs, commit history, file ages, existing review comments — and produces a structured walkthrough that sequences the changes for progressive understanding. Then it renders that walkthrough as an interactive review UI where you can read the narrative, inspect the diffs, post comments, and submit your review — all in one place.
 
-### Install prerequisites
-
-```bash
-# Install GitHub CLI (macOS)
-brew install gh
-gh auth login
-
-# Set your Anthropic API key
-export ANTHROPIC_API_KEY=sk-ant-...
-# Or create a .env file in the project root:
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-```
-
-## Installation
+## Quick start
 
 ```bash
 git clone https://github.com/houshuang/ai-pr-review.git
 cd ai-pr-review
 pnpm install
-```
 
-## Usage
-
-### Quick start — review a PR
-
-```bash
+# Review any GitHub PR
 ./bin/review https://github.com/owner/repo/pull/123
 ```
 
-This will:
-1. Fetch the PR data from GitHub
-2. Generate a walkthrough using Claude
-3. Start the dev server
-4. Open the review UI in your browser
+This fetches the PR, generates a walkthrough with Claude, and opens it in your browser.
 
-### Step by step
+### Requirements
 
-```bash
-# Generate a walkthrough
-pnpm generate https://github.com/owner/repo/pull/123
+- Node.js 18+, pnpm
+- [GitHub CLI](https://cli.github.com/) (`gh auth login`)
+- Anthropic API key (`export ANTHROPIC_API_KEY=sk-ant-...` or add to `.env`)
 
-# Start the dev server
-pnpm dev --port 5200
+## How it works
 
-# Open in browser (the slug is printed by the generate command)
-# http://localhost:5200/?pr=owner-repo-123
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         review <PR url>                         │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │   GitHub CLI (gh)    │
+                    │                     │
+                    │  PR metadata        │
+                    │  Full diff          │
+                    │  Review comments    │
+                    │  Commit history     │
+                    │  File ages & churn  │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │   Claude API        │
+                    │                     │
+                    │  Structured JSON    │
+                    │  walkthrough with   │
+                    │  sections, hunks,   │
+                    │  annotations,       │
+                    │  diagrams           │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │   Preact SPA        │
+                    │                     │
+                    │  Interactive review │
+                    │  UI with diffs,     │
+                    │  comments, chat,    │
+                    │  progress tracking  │
+                    └─────────────────────┘
 ```
 
-### From a local diff
+**Generator** (`src/generate.js`) — Fetches everything about the PR via `gh` CLI, builds a rich context (diff, commits, file ages, churn, existing comments), and sends it to Claude with a detailed prompt. Claude returns structured JSON: narrative sections with annotated code hunks, importance ratings, architecture diagrams, and review tips.
+
+**Viewer** (Preact SPA) — Renders the walkthrough as an interactive review UI. Diffs are syntax-highlighted and filtered to show only the relevant hunks per section. The Vite dev server proxies GitHub API calls through `gh`, so posting comments and submitting reviews works without managing tokens.
+
+**AI Chat** — Each section has a chat assistant (powered by Claude Code CLI) that can answer questions about the code changes. It has read access to the actual codebase, so it can look up context, check git history, and give informed answers.
+
+## Features
+
+### Six view layouts
+
+| Layout | Best for |
+|--------|----------|
+| **Editorial** | Default reading flow — narrative sections with inline diffs |
+| **Sidebar** | Side-by-side TOC navigation |
+| **Focus** | Step-through one section at a time |
+| **Split** | Narrative on the left, diff on the right |
+| **Developer** | Dense, code-first view |
+| **Dashboard** | Card grid overview of all sections |
+
+### Code review
+
+- **Syntax-highlighted diffs** with inline AI annotations at the relevant code lines
+- **Side-by-side and unified** diff views (toggle with `s` / `u`)
+- **Context expansion** — click to load surrounding lines (fetched from GitHub)
+- **Importance levels** — critical, important, supporting, context — so you know what to scrutinize
+- **Complete coverage** — every file in the PR appears, either in narrative sections or in "Remaining Changes"
+
+### GitHub integration
+
+- **Post line comments** — select a line or range, write your comment, post directly
+- **Submit reviews** — approve, request changes, or comment from a modal
+- **Existing comments** — threaded inline at the relevant code
+
+### Navigation and progress
+
+- **Keyboard-driven** — `j`/`k` navigate sections, `r` marks reviewed, `n` jumps to next unreviewed, `?` shows all shortcuts
+- **Review progress** — track which sections and files you've reviewed
+- **Architecture diagrams** — auto-generated Mermaid diagrams showing the structural changes
+- **Dark mode** (`d`)
+
+### AI chat
+
+Ask questions about any section — "What happens if this check fails?", "Why was this approach chosen over X?" The chat runs Claude Code with read access to the repo, so it can look up actual source files and git history to give informed answers.
+
+### Smart generation
+
+- **Large PR handling** — Prioritizes modified/deleted files (they touch existing code), includes smaller new files in full, summarizes large new files
+- **Incremental updates** — When a branch gets new commits, the previous walkthrough is sent as context for a faster, structure-preserving update
+- **SHA-based caching** — Same SHA = instant reuse, just refreshes comments and reviews
+
+## Usage
+
+### From a GitHub PR
+
+```bash
+# One command — generates, starts server, opens browser
+./bin/review https://github.com/owner/repo/pull/123
+
+# Force regeneration (skip cache)
+./bin/review https://github.com/owner/repo/pull/123 --force
+```
+
+### From a local branch
 
 ```bash
 # Compare current branch against main
-pnpm generate --local
+./bin/review --local
 
 # Compare against a specific base branch
-pnpm generate --local develop
+./bin/review --local develop
 ```
 
 ### From a patch file
 
 ```bash
-pnpm generate --diff path/to/changes.patch
+./bin/review --diff path/to/changes.patch
 ```
 
-### Caching
-
-Walkthroughs are cached by git SHA. Re-running `review` on the same PR:
-
-- **Same SHA** — reuses the cached walkthrough instantly (refreshes comments/reviews)
-- **Same branch, new commits** — sends the previous walkthrough to Claude for an incremental update (faster, preserves narrative structure)
-- **Different branch / first run** — full generation
-
-To force a full regeneration:
+### Export static HTML
 
 ```bash
-./bin/review https://github.com/owner/repo/pull/123 --force
+# Export a previously generated walkthrough as a self-contained HTML file
+./bin/review --export owner-repo-123
 ```
-
-## Features
-
-- **6 view layouts**: Editorial, Sidebar, Focus (step-by-step), Split, Developer, Dashboard
-- **Syntax-highlighted diffs** with inline AI annotations placed at the relevant code lines
-- **Side-by-side and unified** diff views
-- **Architecture diagrams** (Mermaid) auto-generated from the PR
-- **Review progress tracking** — mark sections and files as reviewed
-- **GitHub integration** — post line comments (single line or ranges), approve/request changes
-- **Keyboard shortcuts** — `j`/`k` navigate, `r` marks reviewed, `n` jumps to next unreviewed, `?` for help
-- **Dark mode**
-- **Context expansion** — click to load more lines around a diff hunk (fetched from GitHub)
 
 ## Configuration
 
-| Environment variable | Description | Default |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key (required for generation) | — |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ANTHROPIC_API_KEY` | Anthropic API key (required) | — |
 | `REVIEW_PORT` | Dev server port | `5200` |
 
-You can also place a `.env` file in the project root:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-## How it works
-
-The **generator** (`src/generate.js`) fetches PR metadata, diffs, review comments, commit history, and file ages via the `gh` CLI. It sends all of this to Claude with a detailed prompt that produces a structured JSON walkthrough — organized into narrative sections, each referencing specific code hunks with importance ratings and annotations.
-
-The **viewer** (Preact SPA) renders this JSON as an interactive review UI. Diffs are rendered with diff2html and post-processed to add syntax highlighting (via highlight.js) and inject annotations inline at the referenced code lines. The Vite dev server proxies GitHub API calls through the `gh` CLI, so posting comments and submitting reviews works without managing tokens.
+Copy `.env.example` to `.env` and add your key, or set it as an environment variable.
 
 ## Project structure
 
 ```
-bin/review          CLI entry point
-src/generate.js     Walkthrough generator (calls gh + Claude API)
-src/app.jsx         Preact app entry point
-src/components/     UI components (App, DiffView, HunkGroup, etc.)
-src/api.js          GitHub API integration (comments, reviews, context)
-src/diff.js         Diff parsing and filtering
-src/state.js        Reactive state (Preact Signals)
-src/styles.css      All styles
-src/mermaid.js      Mermaid diagram rendering
-src/keyboard.js     Keyboard shortcut handling
-src/utils.js        Shared utilities
-vite.config.js      Vite config + gh API proxy middleware
+bin/review              CLI entry point (bash)
+src/
+  generate.js           Walkthrough generator — fetches PR data, calls Claude API
+  export-static.js      Static HTML export
+  app.jsx               Preact entry point
+  state.js              Reactive state management (Preact Signals)
+  api.js                GitHub API integration (comments, reviews, context)
+  diff.js               Diff parsing and filtering
+  keyboard.js           Keyboard shortcuts
+  mermaid.js            Diagram rendering
+  utils.js              Shared utilities
+  styles.css            All styles
+  components/
+    App.jsx             Main app controller
+    ChatThread.jsx      AI chat assistant per section
+    Section.jsx         Narrative section with collapse/review
+    HunkGroup.jsx       File hunks with annotations
+    DiffView.jsx        Syntax-highlighted diff rendering
+    CommentComposer.jsx Inline comment composer
+    ReviewModal.jsx     Approve/request changes dialog
+    Header.jsx          PR metadata and reviewers
+    Landing.jsx         Entry page for loading PRs
+    Overview.jsx        Architecture diagram and summary
+    TOC.jsx             Table of contents
+    ...                 15+ more components
+    layouts/            6 view layout implementations
+vite.config.js          Vite config + gh API proxy + chat middleware
 ```
 
 ## License
