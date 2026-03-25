@@ -1,7 +1,7 @@
 import { h } from "preact";
 import { useRef } from "preact/hooks";
 import { data } from "../state";
-import { md } from "../utils";
+import { md, linkFileRefs } from "../utils";
 import { useMermaid } from "../mermaid";
 
 export function Overview() {
@@ -29,7 +29,7 @@ export function Overview() {
           <span className="callout-label">Review Tips</span>
           <ul>
             {wt.review_tips.map((t, i) => (
-              <li key={i}>{t}</li>
+              <li key={i} dangerouslySetInnerHTML={{ __html: linkFileRefs(md(t)) }} />
             ))}
           </ul>
         </div>

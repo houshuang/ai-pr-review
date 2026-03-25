@@ -87,6 +87,86 @@ export function groupFilesByDirectory(filePaths) {
   return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
+/**
+ * Post-process HTML to turn file:line references into clickable scroll links.
+ * Matches patterns like `src/foo.js:42`, `config.ts:15-20`, `foo.py:100`.
+ * Only matches inside text nodes (not already inside tags).
+ */
+export function linkFileRefs(html) {
+  if (!html) return html;
+  // Match file:line references — file must have an extension, line is a number with optional range
+  // Negative lookbehind for < ensures we don't match inside HTML tags
+  return html.replace(
+    /(?:<code>)?([\w./-]+\.\w{1,10}):(\d+)(?:-(\d+))?(?:<\/code>)?/g,
+    (match, file, startLine, endLine) => {
+      const display = endLine ? `${file}:${startLine}-${endLine}` : `${file}:${startLine}`;
+      return `<a class="file-ref-link" data-file-ref="${file}" data-line="${startLine}" data-end-line="${endLine || startLine}" title="Jump to ${display}">${display}</a>`;
+    }
+  );
+}
+
+/**
+ * Find and scroll to a file:line reference in the diff view.
+ * Looks for hunk groups with matching file paths, then scrolls to the right line.
+ */
+export function scrollToFileLine(filePath, lineNumber) {
+  // Find all hunk elements matching this file
+  const hunks = document.querySelectorAll(`[data-hunk-file]`);
+  let target = null;
+
+  for (const hunk of hunks) {
+    const hunkFile = hunk.getAttribute("data-hunk-file");
+    if (hunkFile === filePath || hunkFile.endsWith("/" + filePath) || filePath.endsWith("/" + hunkFile)) {
+      target = hunk;
+      break;
+    }
+  }
+
+  if (!target) {
+    // Try partial match on just the filename
+    const basename = filePath.split("/").pop();
+    for (const hunk of hunks) {
+      if (hunk.getAttribute("data-hunk-file").endsWith("/" + basename)) {
+        target = hunk;
+        break;
+      }
+    }
+  }
+
+  if (!target) return;
+
+  // Expand if collapsed
+  const hunkKey = target.getAttribute("data-hunk-key");
+  const parentGroup = target.closest(".hunk-group");
+  if (parentGroup) {
+    const toggle = parentGroup.querySelector("[data-hunk-toggle]");
+    if (toggle && parentGroup.querySelector(".hunk-diff") === null) {
+      toggle.click(); // Expand collapsed hunk
+    }
+  }
+
+  // Try to find the exact line number in the diff
+  const lineEl = target.querySelector(
+    `.d2h-code-linenumber:has(+ .d2h-code-line) .line-num2[data-line-number="${lineNumber}"], ` +
+    `td.d2h-code-linenumber .line-num2[data-line-number="${lineNumber}"]`
+  );
+
+  if (lineEl) {
+    const row = lineEl.closest("tr") || lineEl.closest(".d2h-code-line");
+    if (row) {
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.classList.add("highlight-flash");
+      setTimeout(() => row.classList.remove("highlight-flash"), 2000);
+      return;
+    }
+  }
+
+  // Fallback: scroll to the hunk group itself
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+  target.classList.add("highlight-flash");
+  setTimeout(() => target.classList.remove("highlight-flash"), 2000);
+}
+
 export function getFileStats(file) {
   let additions = 0;
   let deletions = 0;
