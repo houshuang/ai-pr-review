@@ -2,7 +2,7 @@ import { h } from "preact";
 import { useState, useCallback } from "preact/hooks";
 import { isGitHubPR, lineSelection } from "../state";
 import { postComment, postCommentRange } from "../api";
-import  from "../utils";
+
 
 export function CommentComposer({ filePath }) {
   if (!isGitHubPR()) return null;

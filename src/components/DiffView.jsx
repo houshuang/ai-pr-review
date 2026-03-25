@@ -4,7 +4,7 @@ import { diff2htmlHtml } from "../diff";
 import { getBlockEndLines } from "../diff";
 import { expandContext } from "../api";
 import { isGitHubPR, findFile, showFullFile, toggleSet, parsedFiles } from "../state";
-import { esc, md } from "../utils";
+import { esc, md, linkFileRefs } from "../utils";
 import { closeTags, nodeStream, mergeStreams, getLanguage } from "diff2html/lib-esm/ui/js/highlight.js-helpers";
 
 function highlightDiffCode(container, filePath) {
@@ -86,7 +86,7 @@ function injectInlineAnnotations(container, fileHunks) {
     const td = document.createElement("td");
     td.colSpan = colCount;
     td.className = `hunk-annotation-inline annotation-${imp}`;
-    td.innerHTML = `<span class="annotation-lines">${lineLabel}</span>${md(hunk.annotation)}`;
+    td.innerHTML = `<span class="annotation-lines">${lineLabel}</span>${linkFileRefs(md(hunk.annotation))}`;
     annotationRow.appendChild(td);
 
     row.after(annotationRow);
@@ -148,7 +148,17 @@ export function DiffView({ file, mode, filePath, hunkKey, fileHunks, showExpandB
   return <div ref={containerRef} className="diff-view-container" />;
 }
 
+function isAllInserts(file) {
+  if (!file.blocks || !file.blocks.length) return false;
+  return file.blocks.every(block =>
+    block.lines.every(line => line.type === "insert")
+  );
+}
+
 function buildDiffHtml(file, mode, filePath, hunkKey, showExpandBars) {
+  // New files (all inserts, no context/deletions) → force unified to avoid empty left pane
+  if (mode !== "unified" && isAllInserts(file)) mode = "unified";
+
   const blocks = file.blocks;
   if (!blocks || !blocks.length) {
     return diff2htmlHtml([file], {

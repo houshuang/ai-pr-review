@@ -756,17 +756,23 @@ strong { font-weight: 600; }
 }
 
 .hunk-annotation-inline {
+  display: block;
   border-top: 1px solid var(--border-light);
+  padding: 10px 14px 10px 12px;
+  border-left: 3px solid var(--blue);
+  color: var(--ink);
+  background: var(--bg-white);
 }
 
-.hunk-annotation.annotation-critical,
-.hunk-annotation-inline.annotation-critical { background: var(--red-bg); }
-.hunk-annotation.annotation-important,
-.hunk-annotation-inline.annotation-important { background: var(--blue-bg); }
-.hunk-annotation.annotation-supporting,
-.hunk-annotation-inline.annotation-supporting { background: var(--bg); }
-.hunk-annotation.annotation-context,
-.hunk-annotation-inline.annotation-context { background: var(--bg); }
+.hunk-annotation.annotation-critical { background: var(--red-bg); }
+.hunk-annotation.annotation-important { background: var(--blue-bg); }
+.hunk-annotation.annotation-supporting { background: var(--bg); }
+.hunk-annotation.annotation-context { background: var(--bg); }
+
+.hunk-annotation-inline.annotation-critical { border-left-color: var(--red); background: var(--red-bg); }
+.hunk-annotation-inline.annotation-important { border-left-color: var(--blue); background: var(--bg-white); }
+.hunk-annotation-inline.annotation-supporting { border-left-color: var(--border); background: var(--bg-white); }
+.hunk-annotation-inline.annotation-context { border-left-color: var(--border); background: var(--bg-white); }
 
 .annotation-lines {
   font-family: var(--mono);
@@ -775,6 +781,15 @@ strong { font-weight: 600; }
   white-space: nowrap;
   flex-shrink: 0;
   padding-top: 2px;
+}
+
+.hunk-annotation-inline .annotation-lines {
+  display: block;
+  background: var(--bg-hover);
+  padding: 1px 6px;
+  border-radius: 3px;
+  width: fit-content;
+  margin-bottom: 4px;
 }
 
 .hunk-annotation p,
@@ -2209,6 +2224,77 @@ html.dark .jump-popup {
 
 .meta-reviewers {
   color: var(--blue);
+}
+
+/* ─── File Reference Links ─── */
+.file-ref-link {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--blue);
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px dashed var(--blue);
+  transition: opacity 0.15s;
+}
+
+.file-ref-link:hover {
+  opacity: 0.75;
+}
+
+@keyframes highlightFlash {
+  0% { background-color: rgba(82,125,165,0.25); }
+  100% { background-color: transparent; }
+}
+
+.highlight-flash {
+  animation: highlightFlash 2s ease-out;
+}
+
+/* ─── Stale Review Banner ─── */
+.stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  margin: 0 auto 0;
+  max-width: 1400px;
+  background: var(--orange-bg);
+  border: 1px solid rgba(199,125,46,0.2);
+  border-radius: 0 0 6px 6px;
+  animation: fadeUp 0.3s ease both;
+  position: sticky;
+  top: 0;
+  z-index: 90;
+}
+
+.stale-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.stale-text {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.stale-text strong { color: var(--orange); }
+.stale-text code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(199,125,46,0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.stale-dismiss {
+  flex-shrink: 0;
+}
+
+html.dark .stale-banner {
+  background: rgba(199,125,46,0.1);
+  border-color: rgba(199,125,46,0.25);
 }
 
 /* ─── Shortcuts Modal ─── */

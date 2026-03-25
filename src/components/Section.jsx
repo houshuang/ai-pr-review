@@ -5,7 +5,7 @@ import {
   reviewState, collapsedSections, hideReviewed,
   setReviewed, toggleSet, addToSet, saveReviewState,
 } from "../state";
-import { md } from "../utils";
+import { md, linkFileRefs } from "../utils";
 import { Callout } from "./Callout";
 import { HunkGroup } from "./HunkGroup";
 
@@ -97,7 +97,7 @@ export function Section({ section, index }) {
 
       {!collapsed && (
         <div className="section-body">
-          <div className="narrative" dangerouslySetInnerHTML={{ __html: md(section.narrative) }} />
+          <div className="narrative" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(section.narrative)) }} />
 
           {section.diagram && (
             <div className="diagram-container">

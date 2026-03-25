@@ -7,6 +7,7 @@ import {
 import { parseDiff } from "../diff";
 import { ensureMermaidLoaded } from "../mermaid";
 import { getActionItems } from "../keyboard";
+import { scrollToFileLine } from "../utils";
 import { EditorialLayout } from "./layouts/EditorialLayout";
 import { SidebarLayout } from "./layouts/SidebarLayout";
 import { FocusLayout } from "./layouts/FocusLayout";
@@ -15,6 +16,7 @@ import { DashboardLayout } from "./layouts/DashboardLayout";
 import { Landing } from "./Landing";
 import { ChatThread, chatOpen, toggleChat } from "./ChatThread";
 import { SelectionPopover } from "./SelectionPopover";
+import { StaleBanner } from "./StaleBanner";
 
 function getWalkthroughUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -47,6 +49,20 @@ export function App() {
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode.value);
   }, [darkMode.value]);
+
+  // File reference click handler (delegated)
+  useEffect(() => {
+    const handler = (e) => {
+      const link = e.target.closest(".file-ref-link");
+      if (!link) return;
+      e.preventDefault();
+      const file = link.getAttribute("data-file-ref");
+      const line = parseInt(link.getAttribute("data-line"), 10);
+      if (file) scrollToFileLine(file, line);
+    };
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, []);
 
   // View mode class effect
   useEffect(() => {
@@ -234,6 +250,7 @@ export function App() {
 
   return (
     <>
+      <StaleBanner />
       <Layout callbacks={callbacks} />
       <ChatThread />
       <SelectionPopover />

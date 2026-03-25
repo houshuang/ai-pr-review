@@ -90,9 +90,12 @@ This fetches the PR, generates a walkthrough with Claude, and opens it in your b
 ### Code review
 
 - **Syntax-highlighted diffs** with inline AI annotations at the relevant code lines
-- **Side-by-side and unified** diff views (toggle with `s` / `u`)
+- **Side-by-side and unified** diff views (toggle with `s` / `u`); new files auto-switch to unified to avoid a blank left pane
+- **Inline annotations** styled with importance-colored accent borders and line-range badges for clear visual hierarchy
+- **Clickable file references** — `file.ts:42` references in narratives and annotations scroll to the relevant diff line
 - **Context expansion** — click to load surrounding lines (fetched from GitHub)
 - **Importance levels** — critical, important, supporting, context — so you know what to scrutinize
+- **Stale review detection** — banner warns when the PR has new commits since the walkthrough was generated
 - **Complete coverage** — every file in the PR appears, either in narrative sections or in "Remaining Changes"
 
 ### GitHub integration
