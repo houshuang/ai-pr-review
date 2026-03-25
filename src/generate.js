@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } fr
 import { execSync } from "child_process";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { sanitizeWalkthroughDiagrams } from "./mermaid-sanitize.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -30,15 +31,14 @@ function log(level, ...args) {
   }
 }
 
-// --- Diff parsing and prioritization for large PRs ---
+// --- Diff parsing, filtering, and prioritization for large PRs ---
 
 /**
  * Parse a unified diff into per-file entries.
- * Each entry: { path, isNew, isDeleted, isRenamed, diffText, addedLines, removedLines }
+ * Each entry: { path, isNew, isDeleted, isRenamed, diffText, addedLines, removedLines, diffLines }
  */
 function parseDiffIntoFiles(diff) {
   const files = [];
-  // Split on diff headers
   const chunks = diff.split(/^(?=diff --git )/m);
   for (const chunk of chunks) {
     if (!chunk.trim()) continue;
@@ -54,79 +54,160 @@ function parseDiffIntoFiles(diff) {
       if (line.startsWith("+") && !line.startsWith("+++")) addedLines++;
       if (line.startsWith("-") && !line.startsWith("---")) removedLines++;
     }
-    files.push({ path, isNew, isDeleted, isRenamed, diffText: chunk, addedLines, removedLines });
+    files.push({ path, isNew, isDeleted, isRenamed, diffText: chunk, addedLines, removedLines, diffLines: chunk.split("\n").length });
   }
   return files;
 }
 
+// --- Generated / noise file detection ---
+
+const GENERATED_EXACT = new Set([
+  "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Gemfile.lock",
+  "Cargo.lock", "composer.lock", "poetry.lock", "Pipfile.lock",
+  "go.sum", "flake.lock", "packages.lock.json",
+]);
+
+const GENERATED_PATTERNS = [
+  /\.min\.(js|css)$/,                   // minified assets
+  /\.bundle\.(js|css)$/,                // bundled assets
+  /\.pb\.(go|h|cc)$/,                   // protobuf output
+  /_pb2\.pyi?$/,                        // protobuf Python
+  /\.generated\.\w+$/,                  // explicitly generated
+  /\.snap$/,                            // jest snapshots
+  /\.snap\.tsx?$/,
+  /\.svg$/,                             // SVG assets (usually not hand-written)
+  /vendor\//,                           // vendored deps
+  /node_modules\//,
+  /\.graphql\.ts$/,                     // codegen GraphQL types
+  /\.schema\.json$/,                    // generated schemas
+  /dist\//,                             // build output
+];
+
+const LARGE_FILE_THRESHOLD = 2000; // changed lines
+
+function isGeneratedFile(filePath, changedLines) {
+  const basename = filePath.split("/").pop();
+  if (GENERATED_EXACT.has(basename)) return true;
+  if (GENERATED_PATTERNS.some(p => p.test(filePath))) return true;
+  if (changedLines > LARGE_FILE_THRESHOLD) return true;
+  return false;
+}
+
 /**
- * For large PRs, build a focused diff that prioritizes files interacting with
- * existing code (modified/deleted) and summarizes purely new files.
+ * Build a focused diff using 5-tier graceful degradation:
+ *   Tier 0: Full diff (under budget)
+ *   Tier 1: Drop generated/noise files
+ *   Tier 2: Truncate large new files to ~200 lines each
+ *   Tier 3: For remaining new files, keep only hunk headers + first 50 lines
+ *   Tier 4: Hard-truncate the assembled diff to budget
  *
- * Returns { diff, largePRSummary } where largePRSummary is null for normal PRs
- * or an object describing what was included/excluded.
+ * Returns { diff, largePRSummary, filteredFiles }
  */
 function buildFocusedDiff(fullDiff, maxDiffLines = 15000) {
-  const lineCount = fullDiff.split("\n").length;
-  if (lineCount <= maxDiffLines) {
-    return { diff: fullDiff, largePRSummary: null };
+  const files = parseDiffIntoFiles(fullDiff);
+  const totalLines = fullDiff.split("\n").length;
+
+  // Separate generated files from real files
+  const realFiles = [];
+  const generatedFiles = [];
+  for (const f of files) {
+    if (isGeneratedFile(f.path, f.addedLines + f.removedLines)) {
+      generatedFiles.push(f);
+    } else {
+      realFiles.push(f);
+    }
   }
 
-  const files = parseDiffIntoFiles(fullDiff);
-  const modified = files.filter(f => !f.isNew && !f.isDeleted);
-  const deleted = files.filter(f => f.isDeleted);
-  const newFiles = files.filter(f => f.isNew);
+  if (generatedFiles.length > 0) {
+    log("INFO", `Filtered ${generatedFiles.length} generated/noise files: ${generatedFiles.map(f => f.path).join(", ")}`);
+  }
 
-  // Always include modified and deleted files in full — they touch existing code
-  const priorityDiffParts = [...modified, ...deleted].map(f => f.diffText);
-  let priorityDiff = priorityDiffParts.join("\n");
-  const priorityLineCount = priorityDiff.split("\n").length;
-  const remainingBudget = maxDiffLines - priorityLineCount;
+  // Tier 0: If real files fit, we're done
+  const realDiff = realFiles.map(f => f.diffText).join("\n");
+  const realLineCount = realDiff.split("\n").length;
 
-  // Sort new files: smaller files first (more likely to be glue/integration code)
-  const sortedNew = [...newFiles].sort((a, b) => a.addedLines - b.addedLines);
+  const filteredSummary = generatedFiles.map(f =>
+    `- ${f.path} (${f.isNew ? "new" : "modified"}, +${f.addedLines}/-${f.removedLines} lines, auto-excluded)`
+  );
 
+  if (realLineCount <= maxDiffLines) {
+    return {
+      diff: realDiff,
+      largePRSummary: generatedFiles.length > 0 ? {
+        totalFiles: files.length,
+        includedFiles: realFiles.length,
+        filteredFiles: generatedFiles.length,
+        filteredSummary,
+        tier: generatedFiles.length > 0 ? 1 : 0,
+        originalLineCount: totalLines,
+        focusedLineCount: realLineCount,
+      } : null,
+      filteredFiles: generatedFiles,
+    };
+  }
+
+  // Tier 1+: Need to cut further. Prioritize modified/deleted over new.
+  const modified = realFiles.filter(f => !f.isNew && !f.isDeleted);
+  const deleted = realFiles.filter(f => f.isDeleted);
+  const newFiles = realFiles.filter(f => f.isNew);
+
+  // Modified and deleted always included in full
+  const priorityParts = [...modified, ...deleted].map(f => f.diffText);
+  let priorityDiff = priorityParts.join("\n");
+  const priorityLines = priorityDiff.split("\n").length;
+  let remainingBudget = maxDiffLines - priorityLines;
+
+  // Tier 2: Fit new files, truncating large ones to ~200 lines
+  const sortedNew = [...newFiles].sort((a, b) => a.diffLines - b.diffLines);
   const includedNew = [];
+  const truncatedNew = [];
   const summarizedNew = [];
-  let usedBudget = 0;
 
   for (const f of sortedNew) {
-    const fLines = f.diffText.split("\n").length;
-    if (usedBudget + fLines <= remainingBudget) {
+    if (f.diffLines <= remainingBudget) {
       includedNew.push(f);
-      usedBudget += fLines;
+      remainingBudget -= f.diffLines;
+    } else if (remainingBudget > 200) {
+      // Tier 2: truncate to ~200 lines
+      const lines = f.diffText.split("\n");
+      const truncated = lines.slice(0, 200).join("\n") + `\n... (truncated, ${lines.length - 200} more lines)`;
+      truncatedNew.push({ ...f, diffText: truncated, diffLines: 201 });
+      remainingBudget -= 201;
     } else {
       summarizedNew.push(f);
     }
   }
 
-  // Build the focused diff
   const parts = [priorityDiff];
-  for (const f of includedNew) {
+  for (const f of [...includedNew, ...truncatedNew]) {
     parts.push(f.diffText);
   }
+  let assembledDiff = parts.join("\n");
 
-  // Build summaries for excluded new files
-  const summaryLines = summarizedNew.map(f =>
-    `- ${f.path} (new file, +${f.addedLines} lines)`
-  );
+  // Tier 4: Hard-truncate if still over
+  const assembledLines = assembledDiff.split("\n");
+  if (assembledLines.length > maxDiffLines) {
+    assembledDiff = assembledLines.slice(0, maxDiffLines).join("\n") + "\n... (diff truncated to fit context budget)";
+  }
 
   const summary = {
     totalFiles: files.length,
-    modifiedFiles: modified.length,
-    deletedFiles: deleted.length,
-    newFilesIncluded: includedNew.length,
-    newFilesSummarized: summarizedNew.length,
-    summarizedFiles: summaryLines,
-    originalLineCount: lineCount,
-    focusedLineCount: priorityLineCount + usedBudget,
+    includedFiles: modified.length + deleted.length + includedNew.length + truncatedNew.length,
+    filteredFiles: generatedFiles.length,
+    filteredSummary,
+    summarizedFiles: summarizedNew.map(f => `- ${f.path} (new file, +${f.addedLines} lines)`),
+    truncatedFiles: truncatedNew.map(f => `- ${f.path} (truncated to 200 lines from ${f.addedLines})`),
+    tier: summarizedNew.length > 0 ? 3 : truncatedNew.length > 0 ? 2 : 1,
+    originalLineCount: totalLines,
+    focusedLineCount: Math.min(assembledDiff.split("\n").length, maxDiffLines),
   };
 
-  log("INFO", `Large PR: ${lineCount} diff lines → focused to ${summary.focusedLineCount} lines`);
-  log("INFO", `  ${modified.length} modified, ${deleted.length} deleted (full diff)`);
-  log("INFO", `  ${includedNew.length} new files included, ${summarizedNew.length} summarized`);
+  log("INFO", `Large PR: ${totalLines} diff lines → focused to ${summary.focusedLineCount} (tier ${summary.tier})`);
+  log("INFO", `  ${modified.length} modified, ${deleted.length} deleted (full)`);
+  log("INFO", `  ${includedNew.length} new (full), ${truncatedNew.length} new (truncated), ${summarizedNew.length} new (summarized)`);
+  if (generatedFiles.length) log("INFO", `  ${generatedFiles.length} generated/noise files filtered`);
 
-  return { diff: parts.join("\n"), largePRSummary: summary };
+  return { diff: assembledDiff, largePRSummary: summary, filteredFiles: generatedFiles };
 }
 
 function loadEnvKey() {
@@ -455,6 +536,7 @@ The output must be valid JSON matching this schema:
 - file_map MUST list EVERY file in the diff. No exceptions. This ensures the reviewer sees all code.
 - Every hunk must reference real file paths and line numbers from the diff. Verify the numbers.
 - Mermaid diagrams must use valid mermaid syntax. Do NOT wrap in \`\`\`mermaid fences — the raw mermaid text is rendered directly.
+- In Mermaid node labels, ALWAYS use quoted syntax when the label contains | : < > # or other special characters. Example: A["label with | pipe"] not A[label with | pipe]. The pipe character is especially dangerous as Mermaid interprets it as an edge-label delimiter.
 
 ## Guidelines
 
@@ -556,23 +638,28 @@ async function generateWalkthrough(prData, previousWalkthrough = null) {
   const client = new Anthropic({ apiKey });
 
   // For large diffs, focus on code that interacts with existing system
-  const { diff: focusedDiff, largePRSummary } = buildFocusedDiff(prData.diff);
+  const { diff: focusedDiff, largePRSummary, filteredFiles } = buildFocusedDiff(prData.diff);
 
   let largePRContext = "";
   if (largePRSummary) {
-    largePRContext = `
-**⚠️ Large PR — Focused Review Mode**
-This PR is too large to include all diffs. The diff below prioritizes:
-1. **Modified files** (full diff) — these touch existing code and are the highest review priority
-2. **Deleted files** (full diff)
-3. **Smaller new files** (full diff) — likely glue/integration code
-4. **Large new files** (summarized only) — self-contained additions, lower review priority
-
-New files NOT included in the diff (${largePRSummary.newFilesSummarized} files):
-${largePRSummary.summarizedFiles.join("\n")}
-
-Focus your walkthrough on how the new code integrates with the existing system, not on the internal implementation of new standalone modules.
-`;
+    const parts = [`**⚠️ Focused Review Mode (tier ${largePRSummary.tier})**`];
+    parts.push(`Original: ${largePRSummary.totalFiles} files, ${largePRSummary.originalLineCount} diff lines → Focused: ${largePRSummary.includedFiles} files, ${largePRSummary.focusedLineCount} lines.`);
+    parts.push("");
+    parts.push("Prioritization: modified/deleted files (full) > small new files (full) > large new files (truncated) > remaining (summarized).");
+    if (largePRSummary.filteredSummary?.length) {
+      parts.push(`\nGenerated/noise files excluded (${largePRSummary.filteredFiles}):`);
+      parts.push(...largePRSummary.filteredSummary);
+    }
+    if (largePRSummary.truncatedFiles?.length) {
+      parts.push(`\nTruncated files:`);
+      parts.push(...largePRSummary.truncatedFiles);
+    }
+    if (largePRSummary.summarizedFiles?.length) {
+      parts.push(`\nOmitted files (summary only):`);
+      parts.push(...largePRSummary.summarizedFiles);
+    }
+    parts.push("\nFocus on how changes integrate with the existing system.");
+    largePRContext = "\n" + parts.join("\n") + "\n";
   }
 
   let previousContext = "";
@@ -607,7 +694,7 @@ Generate the walkthrough JSON. Important reminders:
 - Every hunk must reference real file paths and line numbers from the diff above
 - Annotations should describe the CHANGE (what was different before), not just describe the resulting code
 - Mermaid diagrams: raw mermaid syntax only, do NOT wrap in \`\`\`mermaid code fences
-- file_map must include every file in the diff${largePRSummary ? " (including summarized new files that were not in the diff — mark them with a note that full diff was omitted)" : ""}`;
+- file_map must include every file in the diff${largePRSummary ? " (including summarized/filtered files — mark them with a note that diff was omitted or auto-excluded)" : ""}`;
 
   log("INFO", "Sending to Claude API...");
   log("INFO", `Diff size: ${(focusedDiff.length / 1024).toFixed(1)}KB${largePRSummary ? ` (focused from ${(prData.diff.length / 1024).toFixed(1)}KB)` : ""}`);
@@ -625,16 +712,22 @@ Generate the walkthrough JSON. Important reminders:
   const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || [null, text];
   const jsonStr = jsonMatch[1].trim();
 
+  let walkthrough;
   try {
-    return JSON.parse(jsonStr);
+    walkthrough = JSON.parse(jsonStr);
   } catch {
     // Try to find JSON object in the response
     const objMatch = text.match(/\{[\s\S]*\}/);
     if (objMatch) {
-      return JSON.parse(objMatch[0]);
+      walkthrough = JSON.parse(objMatch[0]);
+    } else {
+      throw new Error("Failed to parse walkthrough JSON from Claude response");
     }
-    throw new Error("Failed to parse walkthrough JSON from Claude response");
   }
+
+  // Fix common Mermaid syntax issues (e.g. unquoted pipes in node labels)
+  sanitizeWalkthroughDiagrams(walkthrough);
+  return walkthrough;
 }
 
 async function main() {

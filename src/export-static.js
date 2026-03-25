@@ -587,6 +587,25 @@ if (window.hljs) {
 }
 
 // ── Mermaid — same logic as src/mermaid.js renderMermaidIn ──
+function sanitizeMermaid(src) {
+  if (!src) return src;
+  var NEEDS = /[|#<>]/;
+  return src.split("\\n").map(function(line) {
+    var t = line.trim();
+    if (!t || /^%%/.test(t) || /^(flowchart|graph|subgraph|end|classDef|style|click|linkStyle|direction)\\b/.test(t)) return line;
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\[(?!")([^\\]]+)\\]/g, function(m, id, l) {
+      return NEEDS.test(l) ? id + '["' + l.replace(/"/g, '&quot;') + '"]' : m;
+    });
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\((?!")([^)]+)\\)/g, function(m, id, l) {
+      return NEEDS.test(l) ? id + '("' + l.replace(/"/g, '&quot;') + '")' : m;
+    });
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\{(?!")([^}]+)\\}/g, function(m, id, l) {
+      return NEEDS.test(l) ? id + '{"' + l.replace(/"/g, '&quot;') + '"}' : m;
+    });
+    return line;
+  }).join("\\n");
+}
+
 import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs").then(({ default: mermaid }) => {
   mermaid.initialize({
     startOnLoad: false,
@@ -603,9 +622,10 @@ import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs").then(
     },
   });
   document.querySelectorAll(".mermaid-source").forEach(async el => {
-    const raw = el.textContent.trim().replace(/^\`\`\`(?:mermaid)?\\s*\\n?/, "").replace(/\\n?\`\`\`\\s*$/, "");
-    const id = "mermaid-" + Math.random().toString(36).slice(2, 8);
+    var raw = el.textContent.trim().replace(/^\`\`\`(?:mermaid)?\\s*\\n?/, "").replace(/\\n?\`\`\`\\s*$/, "");
+    var id = "mermaid-" + Math.random().toString(36).slice(2, 8);
     try {
+      try { await mermaid.parse(raw); } catch { raw = sanitizeMermaid(raw); }
       const { svg } = await mermaid.render(id, raw);
       const div = document.createElement("div");
       div.className = "mermaid-rendered";

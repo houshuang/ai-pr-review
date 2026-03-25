@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "preact/hooks";
 import { darkMode } from "./state";
+import { sanitizeMermaidSource } from "./mermaid-sanitize.js";
 
 let mermaidLoaded = false;
 let mermaidLoading = null;
@@ -82,7 +83,19 @@ export async function renderMermaidIn(container) {
   for (const el of els) {
     const id = `mermaid-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const raw = el.textContent.trim().replace(/^```(?:mermaid)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+      let raw = el.textContent.trim().replace(/^```(?:mermaid)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+
+      // Validate syntax first; if it fails, sanitize and retry
+      try {
+        await window.mermaid.parse(raw);
+      } catch {
+        const fixed = sanitizeMermaidSource(raw);
+        if (fixed !== raw) {
+          console.info("Mermaid: auto-fixed diagram syntax");
+          raw = fixed;
+        }
+      }
+
       const { svg } = await window.mermaid.render(id, raw);
       const div = document.createElement("div");
       div.className = "mermaid-rendered";
