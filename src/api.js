@@ -33,13 +33,14 @@ export function getCommentThreads(filePath) {
 export async function postComment(path, line, side, body) {
   if (!isGitHubPR()) return;
   const { owner, repo, number } = data.value.meta;
+  const commitId = await getHeadSha();
 
   const result = await ghApi("POST", `repos/${owner}/${repo}/pulls/${number}/comments`, {
     body,
     path,
     line: String(line),
     side: side || "RIGHT",
-    commit_id: "",
+    commit_id: commitId || "",
   });
 
   data.value = {

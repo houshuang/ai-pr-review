@@ -1,10 +1,21 @@
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
 import { execSync } from 'child_process';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import Anthropic from '@anthropic-ai/sdk';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const logsDir = resolve(__dirname, 'logs');
+if (!existsSync(logsDir)) mkdirSync(logsDir);
+const apiLogFile = resolve(logsDir, 'api.log');
+
+function apiLog(level, method, endpoint, detail) {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] [${level}] ${method} ${endpoint}${detail ? ' — ' + detail : ''}\n`;
+  appendFileSync(apiLogFile, line);
+}
 
 // Middleware to proxy GitHub API calls through `gh` CLI
 function ghApiProxy() {
@@ -22,9 +33,13 @@ function ghApiProxy() {
         let body = '';
         req.on('data', (chunk) => (body += chunk));
         req.on('end', () => {
+          let httpMethod = 'unknown';
+          let endpoint = 'unknown';
           try {
-            const { method, endpoint, data } = JSON.parse(body);
-            const httpMethod = (method || 'GET').toUpperCase();
+            const parsed = JSON.parse(body);
+            endpoint = parsed.endpoint;
+            const data = parsed.data;
+            httpMethod = (parsed.method || 'GET').toUpperCase();
 
             // For GET requests, append data fields as query parameters in the URL
             // For other methods, pass as -f body fields
@@ -48,6 +63,8 @@ function ghApiProxy() {
               }
             }
 
+            apiLog('INFO', httpMethod, endpoint, httpMethod !== 'GET' ? `keys: ${Object.keys(data || {}).join(', ')}` : null);
+
             const result = execSync(cmd, {
               encoding: 'utf-8',
               maxBuffer: 10 * 1024 * 1024,
@@ -56,11 +73,13 @@ function ghApiProxy() {
             res.setHeader('Content-Type', 'application/json');
             res.end(result);
           } catch (err) {
+            const stderr = err.stderr?.toString() || '';
+            apiLog('ERROR', httpMethod, endpoint, `${err.message}${stderr ? '\n  stderr: ' + stderr : ''}`);
             res.statusCode = err.status || 500;
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({
               error: err.message,
-              stderr: err.stderr?.toString() || '',
+              stderr,
             }));
           }
         });

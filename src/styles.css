@@ -1209,6 +1209,14 @@ strong { font-weight: 600; }
   font-size: 12px !important;
 }
 
+/* Unified diff: ensure table spans full container width */
+.d2h-file-diff .d2h-code-wrapper {
+  width: 100% !important;
+}
+.d2h-file-diff .d2h-diff-table {
+  width: 100% !important;
+}
+
 /* Fix unified diff layout: override diff2html's absolute-positioned line numbers
    with regular table cells so the layout works in narrow containers */
 .d2h-file-diff .d2h-code-linenumber {

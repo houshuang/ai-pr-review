@@ -68,7 +68,7 @@ This fetches the PR, generates a walkthrough with Claude, and opens it in your b
                     └─────────────────────┘
 ```
 
-**Generator** (`src/generate.js`) — Fetches everything about the PR via `gh` CLI, builds a rich context (diff, commits, file ages, churn, existing comments), and sends it to Claude with a detailed prompt. Claude returns structured JSON: narrative sections with annotated code hunks, importance ratings, architecture diagrams, and review tips.
+**Generator** (`src/generate.js`) — Fetches everything about the PR via `gh` CLI, builds a rich context (diff, commits, file ages, churn, existing comments), and sends it to Claude with a detailed prompt. Claude returns structured JSON: narrative sections with annotated code hunks, importance ratings, architecture diagrams, and review tips. The API call uses a 15-minute timeout with 3 automatic retries (exponential backoff) for connection errors, rate limits, and server errors.
 
 **Viewer** (Preact SPA) — Renders the walkthrough as an interactive review UI. Diffs are syntax-highlighted and filtered to show only the relevant hunks per section. The Vite dev server proxies GitHub API calls through `gh`, so posting comments and submitting reviews works without managing tokens.
 
@@ -120,6 +120,7 @@ Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions abo
 - **Large PR handling** — Prioritizes modified/deleted files (they touch existing code), includes smaller new files in full, summarizes large new files
 - **Incremental updates** — When a branch gets new commits, the previous walkthrough is sent as context for a faster, structure-preserving update
 - **SHA-based caching** — Same SHA = instant reuse, just refreshes comments and reviews
+- **Resilient API calls** — 15-minute timeout, 3 retries with exponential backoff, detailed error diagnostics logged to `logs/`
 
 ## Usage
 

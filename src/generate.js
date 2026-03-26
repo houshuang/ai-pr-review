@@ -7,7 +7,12 @@
  *   node src/generate.js --diff path/to/diff.patch
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import Anthropic, {
+  APIConnectionError,
+  APIConnectionTimeoutError,
+  RateLimitError,
+  InternalServerError,
+} from "@anthropic-ai/sdk";
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { resolve, dirname } from "path";
@@ -635,7 +640,11 @@ async function generateWalkthrough(prData, previousWalkthrough = null) {
     );
   }
 
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({
+    apiKey,
+    timeout: 15 * 60 * 1000, // 15 minutes — large diffs need time
+    maxRetries: 3,
+  });
 
   // For large diffs, focus on code that interacts with existing system
   const { diff: focusedDiff, largePRSummary, filteredFiles } = buildFocusedDiff(prData.diff);
@@ -699,13 +708,44 @@ Generate the walkthrough JSON. Important reminders:
   log("INFO", "Sending to Claude API...");
   log("INFO", `Diff size: ${(focusedDiff.length / 1024).toFixed(1)}KB${largePRSummary ? ` (focused from ${(prData.diff.length / 1024).toFixed(1)}KB)` : ""}`);
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 16000,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userPrompt }],
-  });
+  let response;
+  try {
+    // Use streaming to prevent TCP read timeouts on large diffs.
+    // With non-streaming, long silent waits between request and response
+    // trigger OS/network-level ETIMEDOUT errors. Streaming keeps data flowing.
+    const stream = client.messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 16000,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userPrompt }],
+    });
 
+    // Log progress as tokens arrive
+    let tokenCount = 0;
+    stream.on("text", () => {
+      tokenCount++;
+      if (tokenCount === 1) log("INFO", "First token received, streaming...");
+      if (tokenCount % 2000 === 0) log("INFO", `  ...${tokenCount} tokens received`);
+    });
+
+    response = await stream.finalMessage();
+  } catch (err) {
+    if (err instanceof APIConnectionTimeoutError) {
+      log("ERROR", "API request timed out after 15 minutes (including retries)");
+    } else if (err instanceof APIConnectionError) {
+      log("ERROR", `API connection failed: ${err.message}${err.cause ? ` (cause: ${err.cause})` : ""}`);
+    } else if (err instanceof RateLimitError) {
+      const retryAfter = err.headers?.["retry-after"];
+      log("ERROR", `Rate limited (429)${retryAfter ? ` — retry after ${retryAfter}s` : ""}`);
+    } else if (err instanceof InternalServerError) {
+      log("ERROR", `API server error (${err.status}): ${err.message}`);
+    } else if (err.status) {
+      log("ERROR", `API error (${err.status}): ${err.message}`);
+    }
+    throw err;
+  }
+
+  log("INFO", `API response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
   const text = response.content[0].text;
 
   // Extract JSON from the response (it might be wrapped in ```json blocks)
@@ -844,10 +884,22 @@ main().catch((err) => {
     appendFileSync(LOG_FILE, `\nStack trace:\n${err.stack}\n`);
   }
   if (err.status) {
-    log("ERROR", `API status: ${err.status}`);
+    log("ERROR", `HTTP status: ${err.status}`);
+  }
+  if (err.headers) {
+    const interesting = ["retry-after", "x-request-id", "x-should-retry", "cf-ray"];
+    const found = interesting
+      .filter((h) => err.headers?.[h])
+      .map((h) => `${h}: ${err.headers[h]}`);
+    if (found.length) {
+      appendFileSync(LOG_FILE, `\nResponse headers: ${found.join(", ")}\n`);
+    }
   }
   if (err.error) {
     appendFileSync(LOG_FILE, `\nAPI error body:\n${JSON.stringify(err.error, null, 2)}\n`);
+  }
+  if (err instanceof APIConnectionError) {
+    console.error("Hint: This is a network-level failure. Check your internet connection or try again.");
   }
   console.error(`\nLog file: ${LOG_FILE}`);
   process.exit(1);
