@@ -20,6 +20,9 @@ importers:
       preact:
         specifier: ^10.29.0
         version: 10.29.0
+      undici:
+        specifier: ^7.24.6
+        version: 7.24.6
     devDependencies:
       '@preact/preset-vite':
         specifier: ^2.10.3
@@ -695,6 +698,10 @@ packages:
   undici-types@5.26.5:
     resolution: {integrity: sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA==}
 
+  undici@7.24.6:
+    resolution: {integrity: sha512-Xi4agocCbRzt0yYMZGMA6ApD7gvtUFaxm4ZmeacWI4cZxaF6C+8I8QfofC20NAePiB/IcvZmzkJ7XPa471AEtA==}
+    engines: {node: '>=20.18.1'}
+
   update-browserslist-db@1.2.3:
     resolution: {integrity: sha512-Js0m9cx+qOgDxo0eMiFGEueWztz+d4+M3rGlmKPT+T4IS/jP4ylw3Nwpu6cpTTP8R1MAC1kF4VbdLt3ARf209w==}
     hasBin: true
@@ -1346,6 +1353,8 @@ snapshots:
 
   undici-types@5.26.5:
     optional: true
+
+  undici@7.24.6: {}
 
   update-browserslist-db@1.2.3(browserslist@4.28.1):
     dependencies:

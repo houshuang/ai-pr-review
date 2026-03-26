@@ -18,6 +18,7 @@ import { execSync } from "child_process";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { sanitizeWalkthroughDiagrams } from "./mermaid-sanitize.js";
+import { Agent as UndiciAgent } from "undici";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -644,7 +645,13 @@ async function generateWalkthrough(prData, previousWalkthrough = null) {
     apiKey,
     timeout: 15 * 60 * 1000, // 15 minutes — large diffs need time
     maxRetries: 3,
-    fetchOptions: { keepalive: true },
+    fetchOptions: {
+      dispatcher: new UndiciAgent({
+        connect: { keepAlive: true, keepAliveInitialDelay: 5000 },
+        bodyTimeout: 15 * 60 * 1000,
+        headersTimeout: 15 * 60 * 1000,
+      }),
+    },
   });
 
   // For large diffs, focus on code that interacts with existing system
