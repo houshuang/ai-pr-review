@@ -148,16 +148,16 @@ export function DiffView({ file, mode, filePath, hunkKey, fileHunks, showExpandB
   return <div ref={containerRef} className="diff-view-container" />;
 }
 
-function isAllInserts(file) {
+function hasNoDeletions(file) {
   if (!file.blocks || !file.blocks.length) return false;
   return file.blocks.every(block =>
-    block.lines.every(line => line.type === "insert")
+    block.lines.every(line => line.type !== "delete")
   );
 }
 
 function buildDiffHtml(file, mode, filePath, hunkKey, showExpandBars) {
-  // New files (all inserts, no context/deletions) → force unified to avoid empty left pane
-  if (mode !== "unified" && isAllInserts(file)) mode = "unified";
+  // Add-only chunks (no deletions) → force unified to avoid empty left pane
+  if (mode !== "unified" && hasNoDeletions(file)) mode = "unified";
 
   const blocks = file.blocks;
   if (!blocks || !blocks.length) {

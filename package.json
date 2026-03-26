@@ -15,7 +15,7 @@
     "export": "node src/export-static.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.80.0",
     "@preact/signals": "^2.8.2",
     "diff2html": "^3.4.48",
     "preact": "^10.29.0"

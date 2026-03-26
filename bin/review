@@ -34,8 +34,25 @@ usage() {
 }
 
 if [ -z "$1" ]; then
-  usage
-  exit 1
+  # No args — just start the dev server
+  cd "$REVIEW_TOOL_DIR"
+  if command -v lsof >/dev/null 2>&1 && lsof -ti:$PORT >/dev/null 2>&1; then
+    echo "Dev server already running at http://localhost:${PORT}/"
+  else
+    echo "Starting dev server..."
+    pnpm vite --port $PORT &
+    VITE_PID=$!
+    sleep 2
+    echo "Review tool running at http://localhost:${PORT}/ (PID: $VITE_PID)"
+  fi
+  if command -v open >/dev/null 2>&1; then
+    open "http://localhost:${PORT}/"
+  fi
+  if [ -n "$VITE_PID" ]; then
+    echo "Press Ctrl+C to stop the server."
+    wait $VITE_PID
+  fi
+  exit 0
 fi
 
 ORIGINAL_CWD="$(pwd)"

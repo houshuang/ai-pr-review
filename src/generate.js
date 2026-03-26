@@ -644,6 +644,7 @@ async function generateWalkthrough(prData, previousWalkthrough = null) {
     apiKey,
     timeout: 15 * 60 * 1000, // 15 minutes — large diffs need time
     maxRetries: 3,
+    fetchOptions: { keepalive: true },
   });
 
   // For large diffs, focus on code that interacts with existing system

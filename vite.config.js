@@ -75,7 +75,8 @@ function ghApiProxy() {
           } catch (err) {
             const stderr = err.stderr?.toString() || '';
             apiLog('ERROR', httpMethod, endpoint, `${err.message}${stderr ? '\n  stderr: ' + stderr : ''}`);
-            res.statusCode = err.status || 500;
+            const httpStatus = stderr.includes('HTTP 422') ? 422 : stderr.includes('HTTP 404') ? 404 : 500;
+            res.statusCode = httpStatus;
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({
               error: err.message,

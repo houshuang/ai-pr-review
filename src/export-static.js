@@ -104,17 +104,17 @@ function filterFileToRanges(file, ranges) {
   return { ...file, blocks: filtered };
 }
 
-function isAllInserts(file) {
+function hasNoDeletions(file) {
   if (!file.blocks || !file.blocks.length) return false;
   return file.blocks.every(block =>
-    block.lines.every(line => line.type === "insert")
+    block.lines.every(line => line.type !== "delete")
   );
 }
 
 function renderDiffHtml(file, mode) {
   if (!file || !file.blocks?.length) return "";
-  // New files (all inserts, no context/deletions) → force unified to avoid empty left pane
-  if (mode !== "unified" && isAllInserts(file)) mode = "unified";
+  // Add-only chunks (no deletions) → force unified to avoid empty left pane
+  if (mode !== "unified" && hasNoDeletions(file)) mode = "unified";
   return diff2htmlHtml([file], {
     drawFileList: false,
     matching: "lines",
