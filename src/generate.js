@@ -686,7 +686,7 @@ async function generateWalkthrough(prData, previousWalkthrough = null) {
 The branch has been updated with new commits since the last generation. Use the previous walkthrough as a starting point: keep sections that are still accurate, update line numbers and annotations for changed code, and add/remove sections as needed. Do NOT regenerate from scratch — preserve the narrative structure where possible.
 
 <previous_walkthrough>
-${JSON.stringify(previousWalkthrough, null, 2)}
+${JSON.stringify(previousWalkthrough)}
 </previous_walkthrough>
 
 `;
@@ -699,7 +699,7 @@ ${JSON.stringify(previousWalkthrough, null, 2)}
 **Stats:** +${prData.additions} -${prData.deletions} across ${prData.changedFiles} files
 ${prData.url ? `**URL:** ${prData.url}` : ""}
 ${prData.body ? `\n**PR Description:**\n${prData.body}` : ""}
-${prData.comments?.length ? `\n**Existing Review Comments (${prData.comments.length}):**\n${prData.comments.map((c) => `- ${c.user} on ${c.path}:${c.line}: ${c.body.substring(0, 200)}`).join("\n")}` : ""}
+${prData.comments?.length ? `\n**Existing Review Comments (${prData.comments.length}):**\n${prData.comments.map((c) => `- ${c.user} on ${c.path}:${c.line}: ${c.body}`).join("\n")}` : ""}
 ${prData.reviews?.length ? `\n**Reviews:** ${prData.reviews.map((r) => `${r.user}: ${r.state}`).join(", ")}` : ""}
 ${formatGitHistoryForPrompt(prData.gitHistory)}
 ${largePRContext}${previousContext}**${largePRSummary ? "Focused" : "Full"} Diff:**
@@ -723,7 +723,7 @@ Generate the walkthrough JSON. Important reminders:
     // trigger OS/network-level ETIMEDOUT errors. Streaming keeps data flowing.
     const stream = client.messages.stream({
       model: "claude-sonnet-4-6",
-      max_tokens: 16000,
+      max_tokens: 64000,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     });
