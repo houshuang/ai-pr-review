@@ -91,7 +91,7 @@ This fetches the PR, generates a walkthrough with Claude, and opens it in your b
 
 - **Syntax-highlighted diffs** with inline AI annotations at the relevant code lines
 - **Side-by-side and unified** diff views (toggle with `s` / `u`); new files auto-switch to unified to avoid a blank left pane
-- **Inline annotations** styled with importance-colored accent borders and line-range badges for clear visual hierarchy
+- **Inline annotations** placed at natural block boundaries (after the last changed line in each diff block, not mid-context), styled with importance-colored accent borders and line-range badges; side-by-side mode keeps both panes vertically aligned
 - **Clickable file references** — `file.ts:42` references in narratives and annotations scroll to the relevant diff line
 - **Context expansion** — click to load surrounding lines (fetched from GitHub)
 - **Importance levels** — critical, important, supporting, context — so you know what to scrutinize
@@ -108,7 +108,7 @@ This fetches the PR, generates a walkthrough with Claude, and opens it in your b
 
 - **Keyboard-driven** — `j`/`k` navigate sections, `r` marks reviewed, `n` jumps to next unreviewed, `1`-`6` switch views, `?` shows all shortcuts
 - **Review progress** — track which sections and files you've reviewed
-- **Architecture diagrams** — auto-generated Mermaid diagrams showing the structural changes
+- **Architecture diagrams** — auto-generated Mermaid diagrams showing the structural changes; diagrams are auto-sanitized at generation and render time (pipes, angle brackets, quotes in labels, inner quotes in already-quoted labels) with parse-validate → sanitize → retry logic
 - **Dark mode** — respects OS preference, toggle with `d`. Full dark theme across all views and diff rendering.
 
 ### AI chat

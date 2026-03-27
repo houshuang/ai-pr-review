@@ -52,12 +52,13 @@ function injectInlineAnnotations(container, fileHunks) {
     }
   });
 
-  // Side-by-side fallback: query the new-file (right) table
+  // Side-by-side fallback: each block is a separate .d2h-files-diff — query all of them
   const isSideBySide = lineToRow.size === 0;
   if (isSideBySide) {
-    const sideDiffs = container.querySelectorAll(".d2h-file-side-diff");
-    const rightSide = sideDiffs[sideDiffs.length - 1]; // last = new-file table
-    if (rightSide) {
+    container.querySelectorAll(".d2h-files-diff").forEach((filesDiff) => {
+      const sides = filesDiff.querySelectorAll(".d2h-file-side-diff");
+      const rightSide = sides[sides.length - 1]; // last child = new-file table
+      if (!rightSide) return;
       rightSide.querySelectorAll(".d2h-code-side-linenumber").forEach((el) => {
         const num = parseInt(el.textContent.trim());
         if (!isNaN(num) && num > 0) {
@@ -65,7 +66,7 @@ function injectInlineAnnotations(container, fileHunks) {
           if (row) lineToRow.set(num, row);
         }
       });
-    }
+    });
   }
 
   if (lineToRow.size === 0) return;
@@ -94,12 +95,24 @@ function injectInlineAnnotations(container, fileHunks) {
     const row = lineToRow.get(targetLineNum);
     if (!row) continue;
 
+    // If no more changed lines follow in this diff block, push the annotation
+    // to the end of the block so it doesn't interrupt trailing context rows.
+    const tbody = row.closest("tbody");
+    let insertAfter = row;
+    if (tbody) {
+      const rows = Array.from(tbody.rows);
+      const targetIdx = rows.indexOf(row);
+      const hasMoreChanges = rows.slice(targetIdx + 1).some(
+        (r) => r.classList.contains("d2h-ins") || r.classList.contains("d2h-del")
+      );
+      if (!hasMoreChanges) insertAfter = rows[rows.length - 1];
+    }
+
     const imp = hunk.importance || "important";
     const lineLabel = hunk.startLine
       ? (hunk.startLine === hunk.endLine ? `L${hunk.startLine}` : `L${hunk.startLine}\u2013${hunk.endLine}`)
       : "";
 
-    // Wrap content in a div so that display:block doesn't break colspan on the td
     const annotationRow = document.createElement("tr");
     annotationRow.className = "annotation-row";
     const td = document.createElement("td");
@@ -109,18 +122,19 @@ function injectInlineAnnotations(container, fileHunks) {
     div.innerHTML = `<span class="annotation-lines">${lineLabel}</span>${linkFileRefs(md(hunk.annotation))}`;
     td.appendChild(div);
     annotationRow.appendChild(td);
-    row.after(annotationRow);
+    insertAfter.after(annotationRow);
 
     // In side-by-side mode, mirror a styled spacer into the left (old-file) table
-    // so the two tables stay vertically aligned and the annotation looks full-width
+    // so the two tables stay vertically aligned and the annotation looks full-width.
+    // Height is synced after layout via rAF to prevent row misalignment below.
     if (isSideBySide) {
       const filesDiff = row.closest(".d2h-files-diff");
       const leftSide = filesDiff?.querySelector(".d2h-file-side-diff");
       const leftTbody = leftSide?.querySelector("tbody");
-      const rightTbody = row.closest("tbody");
+      const rightTbody = insertAfter.closest("tbody");
       if (leftTbody && rightTbody) {
-        const rowIndex = Array.from(rightTbody.rows).indexOf(row);
-        const leftRow = leftTbody.rows[rowIndex];
+        const insertAfterIndex = Array.from(rightTbody.rows).indexOf(insertAfter);
+        const leftRow = leftTbody.rows[insertAfterIndex];
         if (leftRow) {
           const spacerRow = document.createElement("tr");
           spacerRow.className = "annotation-row";
@@ -128,9 +142,13 @@ function injectInlineAnnotations(container, fileHunks) {
           spacerTd.colSpan = colCount;
           const spacerDiv = document.createElement("div");
           spacerDiv.className = `hunk-annotation-inline annotation-${imp} annotation-sbs-spacer`;
-          spacerRow.appendChild(spacerTd);
           spacerTd.appendChild(spacerDiv);
+          spacerRow.appendChild(spacerTd);
           leftRow.after(spacerRow);
+          requestAnimationFrame(() => {
+            const h = annotationRow.getBoundingClientRect().height;
+            if (h > 0) spacerDiv.style.minHeight = `${h}px`;
+          });
         }
       }
     }

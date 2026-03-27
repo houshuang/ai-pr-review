@@ -6,7 +6,7 @@
  */
 
 // Characters that break Mermaid parsing when unquoted inside node labels
-const NEEDS_QUOTING = /[|#<>]/;
+const NEEDS_QUOTING = /[|#<>"]/;
 
 /**
  * Quote unquoted node labels that contain characters Mermaid would misparse.
@@ -62,6 +62,22 @@ export function sanitizeMermaidSource(source) {
           }
           return match;
         }
+      );
+
+      // Escape inner double-quotes inside already-quoted labels.
+      // Uses greedy (.+) to match the outermost closing quote rather than the first inner one.
+      // e.g. A["change("m ⟹ ...")"] → A["change(&quot;m ⟹ ...&quot;)"]
+      line = line.replace(
+        /\b([A-Za-z_]\w*)\["(.+)"\]/g,
+        (match, id, label) => label.includes('"') ? `${id}["${label.replace(/"/g, "&quot;")}"]` : match
+      );
+      line = line.replace(
+        /\b([A-Za-z_]\w*)\("(.+)"\)/g,
+        (match, id, label) => label.includes('"') ? `${id}("${label.replace(/"/g, "&quot;")}")` : match
+      );
+      line = line.replace(
+        /\b([A-Za-z_]\w*)\{"(.+)"\}/g,
+        (match, id, label) => label.includes('"') ? `${id}{"${label.replace(/"/g, "&quot;")}"}` : match
       );
 
       return line;

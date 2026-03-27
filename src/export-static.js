@@ -555,17 +555,28 @@ document.querySelectorAll(".hunk-annotations").forEach(container => {
     const row = lineToRow.get(targetLineNum);
     if (!row) return;
 
-    // Wrap content in inner div so display:block doesn't break colspan on the td
-    const annotationRow = document.createElement("tr");
+    // If no more changed lines follow in this block, push to end of block
+    var tbody = row.closest("tbody");
+    var insertAfter = row;
+    if (tbody) {
+      var rows = Array.from(tbody.rows);
+      var targetIdx = rows.indexOf(row);
+      var hasMoreChanges = rows.slice(targetIdx + 1).some(function(r) {
+        return r.classList.contains("d2h-ins") || r.classList.contains("d2h-del");
+      });
+      if (!hasMoreChanges) insertAfter = rows[rows.length - 1];
+    }
+
+    var annotationRow = document.createElement("tr");
     annotationRow.className = "annotation-row";
-    const td = document.createElement("td");
+    var td = document.createElement("td");
     td.colSpan = colCount;
-    const div = document.createElement("div");
+    var div = document.createElement("div");
     div.className = ann.className.replace("hunk-annotation", "hunk-annotation-inline");
     div.innerHTML = ann.innerHTML;
     td.appendChild(div);
     annotationRow.appendChild(td);
-    row.after(annotationRow);
+    insertAfter.after(annotationRow);
     ann.remove();
   });
 
@@ -600,7 +611,7 @@ if (window.hljs) {
 // ── Mermaid — same logic as src/mermaid.js renderMermaidIn ──
 function sanitizeMermaid(src) {
   if (!src) return src;
-  var NEEDS = /[|#<>]/;
+  var NEEDS = /[|#<>"]/;
   return src.split("\\n").map(function(line) {
     var t = line.trim();
     if (!t || /^%%/.test(t) || /^(flowchart|graph|subgraph|end|classDef|style|click|linkStyle|direction)\\b/.test(t)) return line;
@@ -612,6 +623,16 @@ function sanitizeMermaid(src) {
     });
     line = line.replace(/\\b([A-Za-z_]\\w*)\\{(?!")([^}]+)\\}/g, function(m, id, l) {
       return NEEDS.test(l) ? id + '{"' + l.replace(/"/g, '&quot;') + '"}' : m;
+    });
+    // Escape inner double-quotes inside already-quoted labels (greedy match for outermost closing quote)
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\["(.+)"\\]/g, function(m, id, l) {
+      return l.includes('"') ? id + '["' + l.replace(/"/g, '&quot;') + '"]' : m;
+    });
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\("(.+)"\\)/g, function(m, id, l) {
+      return l.includes('"') ? id + '("' + l.replace(/"/g, '&quot;') + '")' : m;
+    });
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\{"(.+)"\\}/g, function(m, id, l) {
+      return l.includes('"') ? id + '{"' + l.replace(/"/g, '&quot;') + '"}' : m;
     });
     return line;
   }).join("\\n");
