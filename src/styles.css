@@ -774,6 +774,17 @@ strong { font-weight: 600; }
 .hunk-annotation-inline.annotation-supporting { border-left-color: var(--border); background: var(--bg-white); }
 .hunk-annotation-inline.annotation-context { border-left-color: var(--border); background: var(--bg-white); }
 
+/* annotation-row td is a plain table cell; the inner div carries all the styling */
+.annotation-row td { padding: 0 !important; }
+
+/* SBS spacer mirrors the annotation's background in the old-file pane for visual full-width */
+.annotation-sbs-spacer {
+  border-left: none !important;
+  border-top: 1px solid var(--border-light) !important;
+  pointer-events: none;
+  min-height: 1px;
+}
+
 .annotation-lines {
   font-family: var(--mono);
   font-size: 10px;

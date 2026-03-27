@@ -555,13 +555,15 @@ document.querySelectorAll(".hunk-annotations").forEach(container => {
     const row = lineToRow.get(targetLineNum);
     if (!row) return;
 
-    // Create annotation row (same as DiffView.jsx:84-92)
+    // Wrap content in inner div so display:block doesn't break colspan on the td
     const annotationRow = document.createElement("tr");
     annotationRow.className = "annotation-row";
     const td = document.createElement("td");
     td.colSpan = colCount;
-    td.className = ann.className.replace("hunk-annotation", "hunk-annotation-inline");
-    td.innerHTML = ann.innerHTML;
+    const div = document.createElement("div");
+    div.className = ann.className.replace("hunk-annotation", "hunk-annotation-inline");
+    div.innerHTML = ann.innerHTML;
+    td.appendChild(div);
     annotationRow.appendChild(td);
     row.after(annotationRow);
     ann.remove();

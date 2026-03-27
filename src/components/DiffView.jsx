@@ -40,7 +40,9 @@ function highlightDiffCode(container, filePath) {
 function injectInlineAnnotations(container, fileHunks) {
   if (!fileHunks) return;
 
-  // Build map of new-file line numbers to their <tr> elements
+  // Build map of new-file line numbers to their <tr> elements.
+  // Unified (line-by-line) mode uses .line-num2 divs; side-by-side uses the
+  // right table's .d2h-code-side-linenumber td text directly.
   const lineToRow = new Map();
   container.querySelectorAll(".line-num2").forEach((el) => {
     const num = parseInt(el.textContent);
@@ -49,6 +51,22 @@ function injectInlineAnnotations(container, fileHunks) {
       if (row) lineToRow.set(num, row);
     }
   });
+
+  // Side-by-side fallback: query the new-file (right) table
+  const isSideBySide = lineToRow.size === 0;
+  if (isSideBySide) {
+    const sideDiffs = container.querySelectorAll(".d2h-file-side-diff");
+    const rightSide = sideDiffs[sideDiffs.length - 1]; // last = new-file table
+    if (rightSide) {
+      rightSide.querySelectorAll(".d2h-code-side-linenumber").forEach((el) => {
+        const num = parseInt(el.textContent.trim());
+        if (!isNaN(num) && num > 0) {
+          const row = el.closest("tr");
+          if (row) lineToRow.set(num, row);
+        }
+      });
+    }
+  }
 
   if (lineToRow.size === 0) return;
   const lineNums = [...lineToRow.keys()].sort((a, b) => a - b);
@@ -81,15 +99,41 @@ function injectInlineAnnotations(container, fileHunks) {
       ? (hunk.startLine === hunk.endLine ? `L${hunk.startLine}` : `L${hunk.startLine}\u2013${hunk.endLine}`)
       : "";
 
+    // Wrap content in a div so that display:block doesn't break colspan on the td
     const annotationRow = document.createElement("tr");
     annotationRow.className = "annotation-row";
     const td = document.createElement("td");
     td.colSpan = colCount;
-    td.className = `hunk-annotation-inline annotation-${imp}`;
-    td.innerHTML = `<span class="annotation-lines">${lineLabel}</span>${linkFileRefs(md(hunk.annotation))}`;
+    const div = document.createElement("div");
+    div.className = `hunk-annotation-inline annotation-${imp}`;
+    div.innerHTML = `<span class="annotation-lines">${lineLabel}</span>${linkFileRefs(md(hunk.annotation))}`;
+    td.appendChild(div);
     annotationRow.appendChild(td);
-
     row.after(annotationRow);
+
+    // In side-by-side mode, mirror a styled spacer into the left (old-file) table
+    // so the two tables stay vertically aligned and the annotation looks full-width
+    if (isSideBySide) {
+      const filesDiff = row.closest(".d2h-files-diff");
+      const leftSide = filesDiff?.querySelector(".d2h-file-side-diff");
+      const leftTbody = leftSide?.querySelector("tbody");
+      const rightTbody = row.closest("tbody");
+      if (leftTbody && rightTbody) {
+        const rowIndex = Array.from(rightTbody.rows).indexOf(row);
+        const leftRow = leftTbody.rows[rowIndex];
+        if (leftRow) {
+          const spacerRow = document.createElement("tr");
+          spacerRow.className = "annotation-row";
+          const spacerTd = document.createElement("td");
+          spacerTd.colSpan = colCount;
+          const spacerDiv = document.createElement("div");
+          spacerDiv.className = `hunk-annotation-inline annotation-${imp} annotation-sbs-spacer`;
+          spacerRow.appendChild(spacerTd);
+          spacerTd.appendChild(spacerDiv);
+          leftRow.after(spacerRow);
+        }
+      }
+    }
   }
 
   // Apply highlight.js to code blocks within annotations
