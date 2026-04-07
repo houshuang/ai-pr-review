@@ -84,6 +84,8 @@ export async function renderMermaidIn(container) {
     const id = `mermaid-${Math.random().toString(36).slice(2, 8)}`;
     try {
       let raw = el.textContent.trim().replace(/^```(?:mermaid)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+      // Decode HTML entities that may have leaked through the rendering pipeline
+      raw = raw.replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
 
       // Validate syntax first; if it fails, sanitize and retry
       try {

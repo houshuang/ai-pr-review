@@ -543,6 +543,8 @@ The output must be valid JSON matching this schema:
 - Every hunk must reference real file paths and line numbers from the diff. Verify the numbers.
 - Mermaid diagrams must use valid mermaid syntax. Do NOT wrap in \`\`\`mermaid fences — the raw mermaid text is rendered directly.
 - In Mermaid node labels, ALWAYS use quoted syntax when the label contains | : < > # or other special characters. Example: A["label with | pipe"] not A[label with | pipe]. The pipe character is especially dangerous as Mermaid interprets it as an edge-label delimiter.
+- Use ONLY standard Mermaid arrow syntax: --> for normal arrows, ==> for thick arrows, -.-> for dotted arrows. NEVER use unicode arrows like ──→, ──>, ⟶, or other non-ASCII arrow characters.
+- Keep each node definition on its own line. Do NOT put multiple node definitions like A["x"] --> B["y"] --> C["z"] on a single line — split them into separate lines.
 
 ## Guidelines
 
@@ -631,6 +633,66 @@ function formatGitHistoryForPrompt(gitHistory) {
   }
 
   return parts.length > 0 ? "\n" + parts.join("\n") + "\n" : "";
+}
+
+async function verifyReviewTips(tips, diff, client) {
+  log("INFO", `Verifying ${tips.length} review tips against the diff...`);
+
+  const prompt = `You are a code reviewer verifying specific review concerns against the actual diff.
+
+For EACH tip below, examine the diff and determine:
+- "verified": You checked and the code looks correct — the concern is addressed or not an issue.
+- "concern": You checked and there IS a real issue, risk, or the concern is valid.
+- "info": Cannot be fully determined from the diff alone (e.g. requires runtime testing, checking files not in the diff, or external context).
+
+Be precise and cite specific evidence from the diff. If a tip mentions a file/line, look at that exact location.
+
+Return ONLY a JSON array (no wrapping object, no markdown fences):
+[
+  {
+    "tip": "the original tip text, verbatim",
+    "status": "verified|concern|info",
+    "finding": "1-2 sentences: what you found, with file:line references to evidence"
+  }
+]
+
+## Tips to Verify
+${tips.map((t, i) => `${i + 1}. ${t}`).join("\n")}
+
+## Diff
+\`\`\`diff
+${diff}
+\`\`\``;
+
+  try {
+    const stream = client.messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const response = await stream.finalMessage();
+    const text = response.content[0].text;
+    log("INFO", `Tip verification: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+
+    // Parse JSON — may be wrapped in ```json fences
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || [null, text];
+    const parsed = JSON.parse(jsonMatch[1].trim());
+    const verified = Array.isArray(parsed) ? parsed : parsed.verified_tips || parsed.tips || [];
+
+    if (verified.length > 0) {
+      if (verified.length !== tips.length) {
+        log("WARN", `Verification returned ${verified.length} tips but expected ${tips.length}`);
+      }
+      return verified;
+    }
+    log("WARN", "Verification returned empty results, using unverified tips");
+  } catch (err) {
+    log("WARN", `Tip verification failed (${err.message}), using unverified tips`);
+  }
+
+  // Fallback: return original tips as info-status objects
+  return tips.map((t) => ({ tip: t, status: "info", finding: "Verification unavailable" }));
 }
 
 async function generateWalkthrough(prData, previousWalkthrough = null) {
@@ -775,6 +837,16 @@ Generate the walkthrough JSON. Important reminders:
 
   // Fix common Mermaid syntax issues (e.g. unquoted pipes in node labels)
   sanitizeWalkthroughDiagrams(walkthrough);
+
+  // Verify review tips against the actual diff
+  if (walkthrough.review_tips?.length) {
+    walkthrough.review_tips = await verifyReviewTips(
+      walkthrough.review_tips,
+      focusedDiff,
+      client
+    );
+  }
+
   return walkthrough;
 }
 

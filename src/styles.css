@@ -582,6 +582,81 @@ strong { font-weight: 600; }
 
 .callout p { color: var(--ink-mid); margin-bottom: 0; }
 
+/* ─── Review Tips ─── */
+.review-tips {
+  margin: 1.5rem 0;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  background: var(--bg-white);
+}
+
+.review-tips-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  margin: 0 0 0.75rem 0;
+}
+
+.review-tips-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.review-tip {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.review-tip.verified { background: rgba(63, 185, 80, 0.06); border-left-color: var(--green); }
+.review-tip.concern { background: rgba(210, 153, 34, 0.08); border-left-color: var(--orange); }
+.review-tip.info { background: rgba(82, 125, 165, 0.06); border-left-color: var(--blue); }
+.review-tip.legacy { background: rgba(82, 125, 165, 0.06); border-left-color: var(--blue); }
+
+.tip-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 700;
+  width: 1.2em;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.tip-verified { color: var(--green); }
+.tip-concern { color: var(--orange); }
+.tip-info { color: var(--blue); }
+
+.tip-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.tip-text {
+  color: var(--ink-mid);
+}
+
+.tip-text p { margin: 0; }
+
+.tip-finding {
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+
+.tip-finding p { margin: 0; }
+
 /* ─── Diagrams ─── */
 .diagram-container {
   margin: 1.5rem 0;
@@ -1722,6 +1797,11 @@ html.dark .narrative code,
 html.dark .comment-body code { background: var(--bg-hover); border-color: var(--border); }
 
 html.dark .diagram-container { border-color: var(--border); }
+html.dark .review-tips { background: var(--bg-white); border-color: var(--border); }
+html.dark .review-tip.verified { background: rgba(46,160,67,0.06); }
+html.dark .review-tip.concern { background: rgba(227,179,65,0.08); }
+html.dark .review-tip.info { background: rgba(121,192,255,0.06); }
+html.dark .review-tip.legacy { background: rgba(121,192,255,0.06); }
 
 html.dark .narrative pre { background: #111; }
 

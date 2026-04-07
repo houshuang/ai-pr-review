@@ -11,6 +11,9 @@ const NEEDS_QUOTING = /[|#<>"]/;
 /**
  * Quote unquoted node labels that contain characters Mermaid would misparse.
  * Converts e.g. A[text with | pipe] → A["text with | pipe"]
+ *
+ * Uses Mermaid's own entity syntax (#quot;) for escaping inner double-quotes,
+ * NOT HTML entities (&quot;) which Mermaid doesn't understand.
  */
 export function sanitizeMermaidSource(source) {
   if (!source) return source;
@@ -31,12 +34,18 @@ export function sanitizeMermaidSource(source) {
         return line;
       }
 
+      // Normalize unicode arrows to standard Mermaid arrows
+      line = line.replace(/\s*[─━—–]{1,3}[→⟶>]\s*/g, " --> ");
+      line = line.replace(/\s*[─━—–]{1,3}[⟹>]\s*/g, " ==> ");
+      // Also fix &quot; that may have leaked from prior broken sanitization
+      line = line.replace(/&quot;/g, "#quot;");
+
       // Quote square-bracket labels: A[text] → A["text"]
       line = line.replace(
         /\b([A-Za-z_]\w*)\[(?!")([^\]]+)\]/g,
         (match, id, label) => {
           if (NEEDS_QUOTING.test(label)) {
-            return `${id}["${label.replace(/"/g, "&quot;")}"]`;
+            return `${id}["${label.replace(/"/g, "#quot;")}"]`;
           }
           return match;
         }
@@ -47,7 +56,7 @@ export function sanitizeMermaidSource(source) {
         /\b([A-Za-z_]\w*)\((?!")([^)]+)\)/g,
         (match, id, label) => {
           if (NEEDS_QUOTING.test(label)) {
-            return `${id}("${label.replace(/"/g, "&quot;")}")`;
+            return `${id}("${label.replace(/"/g, "#quot;")}")`;
           }
           return match;
         }
@@ -58,26 +67,26 @@ export function sanitizeMermaidSource(source) {
         /\b([A-Za-z_]\w*)\{(?!")([^}]+)\}/g,
         (match, id, label) => {
           if (NEEDS_QUOTING.test(label)) {
-            return `${id}{"${label.replace(/"/g, "&quot;")}"}`;
+            return `${id}{"${label.replace(/"/g, "#quot;")}"}`;
           }
           return match;
         }
       );
 
       // Escape inner double-quotes inside already-quoted labels.
-      // Uses greedy (.+) to match the outermost closing quote rather than the first inner one.
-      // e.g. A["change("m ⟹ ...")"] → A["change(&quot;m ⟹ ...&quot;)"]
+      // Uses negative lookahead (?!"\]) to stop at the node's closing delimiter
+      // instead of greedy (.+) which would match across multiple nodes on one line.
       line = line.replace(
-        /\b([A-Za-z_]\w*)\["(.+)"\]/g,
-        (match, id, label) => label.includes('"') ? `${id}["${label.replace(/"/g, "&quot;")}"]` : match
+        /\b([A-Za-z_]\w*)\["((?:(?!"\]).)*)"\]/g,
+        (match, id, label) => label.includes('"') ? `${id}["${label.replace(/"/g, "#quot;")}"]` : match
       );
       line = line.replace(
-        /\b([A-Za-z_]\w*)\("(.+)"\)/g,
-        (match, id, label) => label.includes('"') ? `${id}("${label.replace(/"/g, "&quot;")}")` : match
+        /\b([A-Za-z_]\w*)\("((?:(?!"\)).)*)"\)/g,
+        (match, id, label) => label.includes('"') ? `${id}("${label.replace(/"/g, "#quot;")}")` : match
       );
       line = line.replace(
-        /\b([A-Za-z_]\w*)\{"(.+)"\}/g,
-        (match, id, label) => label.includes('"') ? `${id}{"${label.replace(/"/g, "&quot;")}"}` : match
+        /\b([A-Za-z_]\w*)\{"((?:(?!"\}).)*)"\}/g,
+        (match, id, label) => label.includes('"') ? `${id}{"${label.replace(/"/g, "#quot;")}"}` : match
       );
 
       return line;

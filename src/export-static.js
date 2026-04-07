@@ -236,9 +236,18 @@ function renderOverview(wt) {
 
   if (wt.review_tips?.length) {
     html += `
-      <div class="callout insight">
-        <span class="callout-label">Review Tips</span>
-        <ul>${wt.review_tips.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+      <div class="review-tips">
+        <h3 class="review-tips-title">Review Tips</h3>
+        <ul class="review-tips-list">${wt.review_tips
+          .map((t) => {
+            const isObj = typeof t === "object" && t !== null;
+            const status = isObj ? t.status : "legacy";
+            const tipText = isObj ? t.tip : t;
+            const finding = isObj ? t.finding : null;
+            const icon = status === "verified" ? "✓" : status === "concern" ? "⚠" : status === "info" ? "ℹ" : "";
+            return `<li class="review-tip ${status}">${icon ? `<span class="tip-icon tip-${status}">${icon}</span>` : ""}<div class="tip-content"><span class="tip-text">${md(tipText)}</span>${finding ? `<span class="tip-finding">${md(finding)}</span>` : ""}</div></li>`;
+          })
+          .join("")}</ul>
       </div>`;
   }
 
@@ -615,24 +624,29 @@ function sanitizeMermaid(src) {
   return src.split("\\n").map(function(line) {
     var t = line.trim();
     if (!t || /^%%/.test(t) || /^(flowchart|graph|subgraph|end|classDef|style|click|linkStyle|direction)\\b/.test(t)) return line;
+    // Normalize unicode arrows and fix leaked HTML entities
+    line = line.replace(/\\s*[\\u2500\\u2501\\u2014\\u2013]{1,3}[\\u2192\\u27F6>]\\s*/g, " --> ");
+    line = line.replace(/\\s*[\\u2500\\u2501\\u2014\\u2013]{1,3}[\\u27F9>]\\s*/g, " ==> ");
+    line = line.replace(/&quot;/g, '#quot;');
+    // Quote unquoted labels with special chars
     line = line.replace(/\\b([A-Za-z_]\\w*)\\[(?!")([^\\]]+)\\]/g, function(m, id, l) {
-      return NEEDS.test(l) ? id + '["' + l.replace(/"/g, '&quot;') + '"]' : m;
+      return NEEDS.test(l) ? id + '["' + l.replace(/"/g, '#quot;') + '"]' : m;
     });
     line = line.replace(/\\b([A-Za-z_]\\w*)\\((?!")([^)]+)\\)/g, function(m, id, l) {
-      return NEEDS.test(l) ? id + '("' + l.replace(/"/g, '&quot;') + '")' : m;
+      return NEEDS.test(l) ? id + '("' + l.replace(/"/g, '#quot;') + '")' : m;
     });
     line = line.replace(/\\b([A-Za-z_]\\w*)\\{(?!")([^}]+)\\}/g, function(m, id, l) {
-      return NEEDS.test(l) ? id + '{"' + l.replace(/"/g, '&quot;') + '"}' : m;
+      return NEEDS.test(l) ? id + '{"' + l.replace(/"/g, '#quot;') + '"}' : m;
     });
-    // Escape inner double-quotes inside already-quoted labels (greedy match for outermost closing quote)
-    line = line.replace(/\\b([A-Za-z_]\\w*)\\["(.+)"\\]/g, function(m, id, l) {
-      return l.includes('"') ? id + '["' + l.replace(/"/g, '&quot;') + '"]' : m;
+    // Escape inner quotes — negative lookahead stops at node boundary, not across nodes
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\["((?:(?!"\\]).)*)"\\]/g, function(m, id, l) {
+      return l.includes('"') ? id + '["' + l.replace(/"/g, '#quot;') + '"]' : m;
     });
-    line = line.replace(/\\b([A-Za-z_]\\w*)\\("(.+)"\\)/g, function(m, id, l) {
-      return l.includes('"') ? id + '("' + l.replace(/"/g, '&quot;') + '")' : m;
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\("((?:(?!"\\)).)*)"\\)/g, function(m, id, l) {
+      return l.includes('"') ? id + '("' + l.replace(/"/g, '#quot;') + '")' : m;
     });
-    line = line.replace(/\\b([A-Za-z_]\\w*)\\{"(.+)"\\}/g, function(m, id, l) {
-      return l.includes('"') ? id + '{"' + l.replace(/"/g, '&quot;') + '"}' : m;
+    line = line.replace(/\\b([A-Za-z_]\\w*)\\{"((?:(?!"\\}).)*)"\\}/g, function(m, id, l) {
+      return l.includes('"') ? id + '{"' + l.replace(/"/g, '#quot;') + '"}' : m;
     });
     return line;
   }).join("\\n");
@@ -655,6 +669,8 @@ import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs").then(
   });
   document.querySelectorAll(".mermaid-source").forEach(async el => {
     var raw = el.textContent.trim().replace(/^\`\`\`(?:mermaid)?\\s*\\n?/, "").replace(/\\n?\`\`\`\\s*$/, "");
+    // Decode HTML entities that may have leaked through esc() encoding
+    raw = raw.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
     var id = "mermaid-" + Math.random().toString(36).slice(2, 8);
     try {
       try { await mermaid.parse(raw); } catch { raw = sanitizeMermaid(raw); }

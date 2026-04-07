@@ -25,12 +25,25 @@ export function Overview() {
       )}
 
       {wt.review_tips?.length > 0 && (
-        <div className="callout insight">
-          <span className="callout-label">Review Tips</span>
-          <ul>
-            {wt.review_tips.map((t, i) => (
-              <li key={i} dangerouslySetInnerHTML={{ __html: linkFileRefs(md(t)) }} />
-            ))}
+        <div className="review-tips">
+          <h3 className="review-tips-title">Review Tips</h3>
+          <ul className="review-tips-list">
+            {wt.review_tips.map((t, i) => {
+              const isObj = typeof t === "object" && t !== null;
+              const status = isObj ? t.status : null;
+              const tipText = isObj ? t.tip : t;
+              const finding = isObj ? t.finding : null;
+              const icon = status === "verified" ? "✓" : status === "concern" ? "⚠" : status === "info" ? "ℹ" : null;
+              return (
+                <li key={i} className={`review-tip ${status || "legacy"}`}>
+                  {icon && <span className={`tip-icon tip-${status}`}>{icon}</span>}
+                  <div className="tip-content">
+                    <span className="tip-text" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(tipText)) }} />
+                    {finding && <span className="tip-finding" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(finding)) }} />}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
