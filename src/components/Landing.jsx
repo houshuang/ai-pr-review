@@ -1,8 +1,52 @@
 import { h } from "preact";
 import { useState, useCallback } from "preact/hooks";
-import { data, parsedFiles, loadReviewState, applyAutoCollapse } from "../state";
+import { data, parsedFiles, loadReviewState, applyAutoCollapse, loadError } from "../state";
 import { parseDiff } from "../diff";
 
+
+function LoadErrorBanner({ error }) {
+  const { slug, kind, message } = error;
+  const url = `/walkthroughs/${slug}.json`;
+
+  let title, body;
+  if (kind === "stale-dev-server") {
+    title = `Can't load "${slug}" — dev server is stale`;
+    body = (
+      <>
+        <p>
+          The server returned HTML instead of JSON for <code>{url}</code>. The file likely
+          exists on disk, but Vite isn't serving it — new files added to <code>public/</code>{" "}
+          after the dev server started aren't always picked up.
+        </p>
+        <p><strong>Fix:</strong> restart the dev server (stop and rerun <code>pnpm dev</code>), then reload this page.</p>
+      </>
+    );
+  } else if (kind === "missing") {
+    title = `Walkthrough "${slug}" not found`;
+    body = (
+      <p>
+        No file at <code>{url}</code>. Generate it with{" "}
+        <code>node src/generate.js &lt;PR URL&gt;</code> and then reload.
+      </p>
+    );
+  } else if (kind === "parse") {
+    title = `Walkthrough "${slug}" is not valid JSON`;
+    body = <p>Parser error: <code>{message}</code>. The file may be truncated or corrupt.</p>;
+  } else if (kind === "network") {
+    title = `Network error loading "${slug}"`;
+    body = <p><code>{message}</code> — is the dev server still running?</p>;
+  } else {
+    title = `Failed to load "${slug}"`;
+    body = <p><code>{message}</code></p>;
+  }
+
+  return (
+    <div className="load-error-banner">
+      <h3>{title}</h3>
+      {body}
+    </div>
+  );
+}
 
 export function Landing() {
   const [url, setUrl] = useState("");
@@ -81,6 +125,7 @@ export function Landing() {
   return (
     <div className="page-container">
       <div className="landing">
+        {loadError.value && <LoadErrorBanner error={loadError.value} />}
         <div className="landing-header">
           <div className="kicker">Review Tool</div>
           <h1>Interactive PR Walkthrough</h1>

@@ -31,15 +31,20 @@ export function Overview() {
             {wt.review_tips.map((t, i) => {
               const isObj = typeof t === "object" && t !== null;
               const status = isObj ? t.status : null;
+              const pending = isObj && t.pending;
               const tipText = isObj ? t.tip : t;
               const finding = isObj ? t.finding : null;
               const icon = status === "verified" ? "✓" : status === "concern" ? "⚠" : status === "info" ? "ℹ" : null;
               return (
-                <li key={i} className={`review-tip ${status || "legacy"}`}>
-                  {icon && <span className={`tip-icon tip-${status}`}>{icon}</span>}
+                <li key={i} className={`review-tip ${status || "legacy"} ${pending ? "pending" : ""}`}>
+                  {pending
+                    ? <span className="tip-icon tip-pending" title="Investigating in the background"><span className="tip-spinner" /></span>
+                    : icon && <span className={`tip-icon tip-${status}`}>{icon}</span>}
                   <div className="tip-content">
                     <span className="tip-text" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(tipText)) }} />
-                    {finding && <span className="tip-finding" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(finding)) }} />}
+                    {pending
+                      ? <span className="tip-finding tip-finding-pending">Investigating codebase…</span>
+                      : finding && <span className="tip-finding" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(finding)) }} />}
                   </div>
                 </li>
               );

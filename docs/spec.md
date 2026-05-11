@@ -42,6 +42,8 @@ An AI-narrated interactive code review tool. Takes a PR diff, uses Claude to gen
 │  - @preact/preset-vite for JSX                  │
 │  - Proxies GitHub API calls through gh CLI      │
 │  - Enables comment posting, review submission   │
+│  - Serves walkthrough JSONs from disk per req   │
+│    (no restart needed for new walkthroughs)     │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -55,7 +57,14 @@ src/
   diff.js                  — parseDiff(), renderFileDiff(), filterFileToRanges(), diff2html wrappers
   api.js                   — GitHub API: comments, reviews, file content, expand context
   keyboard.js              — getActionItems() for keyboard shortcuts + action panel
-  mermaid.js               — Mermaid diagram loading + useMermaid() hook
+  mermaid.js               — Mermaid loading + useMermaid() hook + click-to-zoom overlay
+  mermaid-sanitize.js      — Pre-render sanitization for common LLM mermaid mistakes
+  generate.js              — CLI walkthrough generator (Node-side)
+  resolve-info-tips.js     — CLI background resolver, invoked by generate.js after
+                             writing the walkthrough when review_tips have
+                             `pending: true` entries. Uses Anthropic tool-use with
+                             grep / read_file / list_files against the target repo.
+                             Each tip gets up to MAX_TOOL_ROUNDS (30) tool rounds.
   styles.css               — All styles (unchanged from pre-Preact)
   components/
     App.jsx                — Root: auto-loads data, keyboard handler, layout router
@@ -88,7 +97,15 @@ interface Walkthrough {
   architecture_diagram: string;  // mermaid
   sections: Section[];
   file_map: FileMapEntry[];
-  review_tips: string[];
+  review_tips: ReviewTip[] | string[];  // objects after verification; plain strings pre-verification
+}
+
+interface ReviewTip {
+  tip: string;                   // the original concern text
+  status: 'verified' | 'concern' | 'info';
+  finding: string;               // evidence with file:line references
+  pending?: true;                // set while background resolver is investigating;
+                                 //   removed once resolved (viewer polls until absent)
 }
 
 interface Section {
@@ -121,7 +138,7 @@ The generator bundles the walkthrough with raw data and metadata:
 
 ```typescript
 interface WalkthroughData {
-  meta: { source, owner, repo, number, title, url, baseBranch, headBranch, additions, deletions, changedFiles, generatedAt };
+  meta: { source, owner, repo, number, title, url, baseBranch, headBranch, headSha, additions, deletions, changedFiles, generatedAt };
   walkthrough: Walkthrough;
   diff: string;
   comments: Comment[];      // GitHub review comments
@@ -243,6 +260,10 @@ The system prompt follows a structural change philosophy inspired by difftastic:
 - Split/unified diff, collapse/expand, review checkboxes (top + bottom of sections)
 - Mark reviewed auto-collapses section and scrolls to header
 - Mermaid diagrams, callouts, importance badges
+- Click-to-zoom pan/zoom overlay for architecture diagrams (works in Preact viewer and in static HTML export)
+- Verified review tips: post-generation pass classifies each tip as verified/concern/info with evidence
+- Background resolver for info-status tips: detached Node process investigates the target repo using Claude tool-use (grep/read_file/list_files), rewrites walkthrough JSON per tip as it resolves; viewer polls every 4s while any tip has `pending: true`. Up to 30 tool rounds per tip (was 10) so investigations of multi-callsite concerns finish instead of timing out
+- Walkthroughs middleware (vite.config.js `walkthroughsEndpoint`): serves `/walkthroughs/*.json` and `/walkthrough-data.json` from disk on every request, ahead of Vite's static handler. Lets newly generated walkthroughs load without restarting the dev server (Vite's static handler caches the `public/` listing at startup, otherwise serving the SPA's `index.html` for unseen JSON files)
 - GitHub comment display with syntax-highlighted code blocks (highlight.js)
 - Comment composer, approve/request changes modal
 - Dark mode toggle
@@ -266,6 +287,9 @@ The system prompt follows a structural change philosophy inspired by difftastic:
 - Hunk-level diff filtering: only shows referenced line ranges, not full file diffs
 - Interleaved annotations: each annotation appears above its matching diff hunk
 - "Open PR on GitHub" action for quick navigation to the source PR
+- Stale review banner: on view, fetches current PR head; if it differs from `meta.headSha`, calls GitHub `compare/{old}...{new}` and renders the new commits (sha, message, author) plus +/-/file totals so reviewers can decide whether re-running is worth it. Generator brackets `gh pr diff` with a verifying `gh pr view` and warns if the head SHA changed mid-fetch (diff/SHA can disagree without this check).
+- Incremental re-review: when the cached walkthrough's `meta.headSha` differs from the current head but `meta.headBranch` matches, the generator computes the delta via `gh api compare/{oldSha}...{newSha}` (GitHub mode) or `git diff oldSha..newSha` (local mode). Empty delta short-circuits to cached walkthrough verbatim. Small delta (≤30KB, ≤8 affected files) triggers patch mode: prompt contains only the delta diff + previous walkthrough + affected file list; Claude returns a JSON patch (`updated_sections` keyed by stable `section.id`, `added_sections`, `removed_section_ids`, `file_map_changes: {added, removed, updated}`, optional `architecture_diagram`, full `review_tips` replacement) merged by `applyWalkthroughPatch`. Output is typically 500–2000 tokens vs ~18000 for a full regen. Patch-mode failures (parse error, network error, throw) auto-fall-back to full regen.
+- JSON parse resilience: malformed Claude responses are recovered through (1) local position-based repair (trailing-comma strip, then iterative escape of unescaped `"`/`\n`/`\r`/`\t` inside string literals based on `JSON.parse` error offset, plus missing-comma insertion heuristic), then (2) Haiku 4.5 "fix syntax only" repair pass. The raw response is dumped to `logs/failed-response-<timestamp>.txt` on any failure so a 5-minute generation is never silently lost.
 
 ### Remaining Gaps
 1. No streaming generation / in-browser generation

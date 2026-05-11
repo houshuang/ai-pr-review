@@ -636,6 +636,32 @@ strong { font-weight: 600; }
 .tip-verified { color: var(--green); }
 .tip-concern { color: var(--orange); }
 .tip-info { color: var(--blue); }
+.tip-pending { color: var(--ink-faint); }
+
+.review-tip.pending {
+  background: rgba(121, 113, 140, 0.06);
+  border-left-color: var(--ink-faint);
+}
+
+.tip-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--ink-mid);
+  animation: tip-spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+
+@keyframes tip-spin {
+  to { transform: rotate(360deg); }
+}
+
+.tip-finding-pending {
+  font-style: italic;
+  opacity: 0.75;
+}
 
 .tip-content {
   display: flex;
@@ -704,6 +730,8 @@ strong { font-weight: 600; }
   display: flex;
   justify-content: center;
   padding: 0.5rem;
+  cursor: zoom-in;
+  position: relative;
 }
 
 .mermaid-rendered svg {
@@ -711,9 +739,125 @@ strong { font-weight: 600; }
   height: auto;
 }
 
+.mermaid-rendered::after {
+  content: "⛶";
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 14px;
+  color: var(--ink-faint);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.mermaid-rendered:hover::after {
+  opacity: 0.7;
+}
+
 .mermaid-error {
   color: var(--orange);
   font-size: 12px;
+}
+
+/* ─── Mermaid zoom overlay ─── */
+.mermaid-zoom-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.mermaid-zoom-overlay.is-open { opacity: 1; }
+
+.mermaid-zoom-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 20, 20, 0.82);
+}
+
+.mermaid-zoom-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mermaid-zoom-stage.is-dragging { cursor: grabbing; }
+
+.mermaid-zoom-canvas {
+  transform-origin: center center;
+  will-change: transform;
+  background: var(--bg-white);
+  border-radius: 6px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  padding: 24px;
+}
+
+.mermaid-zoom-canvas svg {
+  display: block;
+  max-width: none !important;
+  max-height: none !important;
+}
+
+html.dark .mermaid-zoom-canvas {
+  background: var(--bg-white);
+}
+
+.mermaid-zoom-hint {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.mermaid-zoom-controls {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  gap: 6px;
+}
+
+.mermaid-zoom-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(40, 40, 40, 0.85);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 16px;
+  font-family: var(--mono);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.mermaid-zoom-btn:hover {
+  background: rgba(70, 70, 70, 0.9);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.mermaid-zoom-close {
+  margin-left: 6px;
 }
 
 /* ─── Hunks (grouped by file) ─── */
@@ -1172,6 +1316,43 @@ strong { font-weight: 600; }
   padding: 6rem 0;
   max-width: 500px;
   margin: 0 auto;
+}
+
+.load-error-banner {
+  margin-bottom: 2rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid rgba(199,125,46,0.3);
+  border-left: 3px solid var(--orange);
+  border-radius: 6px;
+  background: var(--orange-bg);
+  color: var(--ink);
+}
+
+.load-error-banner h3 {
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 500;
+  margin: 0 0 0.5rem;
+  color: var(--orange);
+}
+
+.load-error-banner p {
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0.4rem 0 0;
+}
+
+.load-error-banner code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(199,125,46,0.12);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+html.dark .load-error-banner {
+  background: rgba(199,125,46,0.08);
+  border-color: rgba(199,125,46,0.35);
 }
 
 .landing-header {
@@ -2352,7 +2533,7 @@ html.dark .jump-popup {
 /* ─── Stale Review Banner ─── */
 .stale-banner {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   padding: 10px 18px;
   margin: 0 auto 0;
@@ -2369,6 +2550,7 @@ html.dark .jump-popup {
 .stale-icon {
   font-size: 1.1rem;
   flex-shrink: 0;
+  line-height: 1.4;
 }
 
 .stale-text {
@@ -2387,8 +2569,31 @@ html.dark .jump-popup {
   border-radius: 3px;
 }
 
+.stale-commit-list {
+  margin: 4px 0 4px 0;
+  padding-left: 18px;
+  max-height: 110px;
+  overflow-y: auto;
+}
+.stale-commit-list li {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.stale-author {
+  color: var(--ink-mid);
+  font-size: 11.5px;
+}
+
+.stale-stats {
+  font-size: 12px;
+  color: var(--ink-mid);
+}
+.stale-add { color: var(--green); font-family: var(--mono); }
+.stale-del { color: var(--red); font-family: var(--mono); }
+
 .stale-dismiss {
   flex-shrink: 0;
+  align-self: center;
 }
 
 html.dark .stale-banner {

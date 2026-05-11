@@ -95,7 +95,7 @@ This fetches the PR, generates a walkthrough with Claude, and opens it in your b
 - **Clickable file references** — `file.ts:42` references in narratives and annotations scroll to the relevant diff line
 - **Context expansion** — click to load surrounding lines (fetched from GitHub)
 - **Importance levels** — critical, important, supporting, context — so you know what to scrutinize
-- **Stale review detection** — banner warns when the PR has new commits since the walkthrough was generated
+- **Stale review detection** — banner warns when the PR has new commits since the walkthrough was generated, listing each new commit (SHA, message, author) and the +/-/file totals so you can decide whether a re-run is worth it. The generator also re-checks the head SHA after fetching the diff and warns if the PR was updated mid-fetch
 - **Complete coverage** — every file in the PR appears, either in narrative sections or in "Remaining Changes"
 
 ### GitHub integration
@@ -108,7 +108,7 @@ This fetches the PR, generates a walkthrough with Claude, and opens it in your b
 
 - **Keyboard-driven** — `j`/`k` navigate sections, `r` marks reviewed, `n` jumps to next unreviewed, `1`-`6` switch views, `?` shows all shortcuts
 - **Review progress** — track which sections and files you've reviewed
-- **Architecture diagrams** — auto-generated Mermaid diagrams showing the structural changes; diagrams are auto-sanitized at generation and render time (pipes, angle brackets, quotes in labels, inner quotes in already-quoted labels) with parse-validate → sanitize → retry logic
+- **Architecture diagrams** — auto-generated Mermaid diagrams showing the structural changes; diagrams are auto-sanitized at generation and render time (pipes, angle brackets, quotes in labels, inner quotes in already-quoted labels) with parse-validate → sanitize → retry logic. Click any diagram to open it in a full-screen pan/zoom overlay (wheel to zoom, drag to pan, double-click to reset, Esc to close)
 - **Dark mode** — respects OS preference, toggle with `d`. Full dark theme across all views and diff rendering.
 
 ### AI chat
@@ -118,9 +118,13 @@ Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions abo
 ### Smart generation
 
 - **Large PR handling** — Prioritizes modified/deleted files (they touch existing code), includes smaller new files in full, summarizes large new files
-- **Incremental updates** — When a branch gets new commits, the previous walkthrough is sent as context for a faster, structure-preserving update
+- **Incremental updates** — When a branch gets new commits, the generator computes the delta diff between the cached head SHA and the new head SHA. Empty delta (force-push of identical content) reuses the cached walkthrough verbatim. Small delta (≤30KB and ≤8 affected files) runs **patch mode**: Claude receives only the delta plus the previous walkthrough and returns a JSON patch (`updated_sections`, `added_sections`, `removed_section_ids`, `file_map_changes`, `review_tips`) which is merged programmatically. Larger deltas fall back to full regeneration. Patch-mode failures fall back to full regen automatically
 - **SHA-based caching** — Same SHA = instant reuse, just refreshes comments and reviews
 - **Resilient API calls** — streaming responses, TCP keepalive (undici Agent), 15-minute timeout, 3 retries with exponential backoff, detailed error diagnostics logged to `logs/`
+- **Resilient JSON parsing** — if Claude returns malformed JSON, the full response is dumped to `logs/failed-response-<timestamp>.txt` and a two-stage repair pipeline runs (local position-based escape pass, then a Haiku 4.5 "fix syntax only" fallback) before the run is failed
+- **Verified review tips** — Claude generates review concerns, then a second pass classifies each as `verified` (✓, addressed), `concern` (⚠, real issue), or `info` (ℹ, can't tell from diff alone)
+- **Background investigation of info tips** — Any tip that couldn't be resolved from the diff spawns a detached background process (`src/resolve-info-tips.js`) that investigates the actual repo using Claude tool-use (`grep`, `read_file`, `list_files`), with a budget of up to 30 tool rounds per tip so it can chase every claim. The viewer opens immediately with spinners on pending tips and polls the JSON every 4s, auto-updating as each tip resolves with specific `file:line` findings. Runs only when the invoking directory is a clone of the PR's repo (for URL-based reviews) or always (for `--local`/`--diff` mode)
+- **Hot-loaded walkthroughs** — The dev server reads `public/walkthroughs/*.json` from disk on every request via a custom Vite middleware, so newly generated walkthroughs are picked up without restarting `pnpm dev`
 
 ## Usage
 
@@ -172,13 +176,17 @@ Copy `.env.example` to `.env` and add your key, or set it as an environment vari
 bin/review              CLI entry point (bash)
 src/
   generate.js           Walkthrough generator — fetches PR data, calls Claude API
+  resolve-info-tips.js  Background resolver — investigates unresolved review tips
+                        in the target repo using Claude tool-use, rewrites JSON
+                        in place as each tip resolves
   export-static.js      Static HTML export
   app.jsx               Preact entry point
   state.js              Reactive state management (Preact Signals)
   api.js                GitHub API integration (comments, reviews, context)
   diff.js               Diff parsing and filtering
   keyboard.js           Keyboard shortcuts
-  mermaid.js            Diagram rendering
+  mermaid.js            Diagram rendering + click-to-zoom overlay
+  mermaid-sanitize.js   Pre-render sanitization for common LLM mermaid mistakes
   utils.js              Shared utilities
   styles.css            All styles
   components/

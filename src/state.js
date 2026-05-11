@@ -2,6 +2,7 @@ import { signal, computed, effect } from "@preact/signals";
 
 // ─── Core State (signals) ────────────────────────────
 export const data = signal(null);
+export const loadError = signal(null);
 export const parsedFiles = signal({});
 export const reviewState = signal({});
 export const diffViewMode = signal("side-by-side");

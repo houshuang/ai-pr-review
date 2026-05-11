@@ -3,6 +3,7 @@ import { useEffect, useCallback } from "preact/hooks";
 import {
   data, parsedFiles, viewMode, darkMode, actionPanelOpen,
   reviewState, getFileCoverage, loadReviewState, applyAutoCollapse,
+  loadError,
 } from "../state";
 import { parseDiff } from "../diff";
 import { ensureMermaidLoaded } from "../mermaid";
@@ -18,31 +19,91 @@ import { ChatThread, chatOpen, toggleChat } from "./ChatThread";
 import { SelectionPopover } from "./SelectionPopover";
 import { StaleBanner } from "./StaleBanner";
 
-function getWalkthroughUrl() {
-  const params = new URLSearchParams(window.location.search);
-  const pr = params.get("pr");
-  if (pr) return `/walkthroughs/${pr}.json`;
-  return "/walkthrough-data.json";
+function getRequestedSlug() {
+  return new URLSearchParams(window.location.search).get("pr");
+}
+
+function getWalkthroughUrl(slug) {
+  return slug ? `/walkthroughs/${slug}.json` : "/walkthrough-data.json";
 }
 
 export function App() {
   // Auto-load walkthrough data on mount
   useEffect(() => {
-    (async () => {
+    const slug = getRequestedSlug();
+    const url = getWalkthroughUrl(slug);
+    let pollTimer = null;
+    let cancelled = false;
+
+    function hasPendingTips(json) {
+      return (json?.walkthrough?.review_tips || []).some(
+        (t) => typeof t === "object" && t.pending
+      );
+    }
+
+    async function load(isInitial) {
+      let resp;
       try {
-        const resp = await fetch(getWalkthroughUrl());
-        if (resp.ok) {
-          const json = await resp.json();
-          data.value = json;
-          parsedFiles.value = parseDiff(json.diff);
-          loadReviewState();
-          applyAutoCollapse();
-          ensureMermaidLoaded();
-        }
-      } catch {
-        // No data available, landing page will show
+        resp = await fetch(url + (isInitial ? "" : `?t=${Date.now()}`));
+      } catch (err) {
+        if (isInitial && slug) loadError.value = { slug, kind: "network", message: err.message };
+        return;
       }
-    })();
+
+      if (!resp.ok) {
+        if (isInitial && slug) {
+          loadError.value = resp.status === 404
+            ? { slug, kind: "missing" }
+            : { slug, kind: "http", message: `HTTP ${resp.status}` };
+        }
+        return;
+      }
+
+      const contentType = resp.headers.get("content-type") || "";
+      if (!contentType.includes("json")) {
+        if (isInitial && slug) loadError.value = { slug, kind: "stale-dev-server" };
+        return;
+      }
+
+      let json;
+      try {
+        json = await resp.json();
+      } catch (err) {
+        if (isInitial && slug) loadError.value = { slug, kind: "parse", message: err.message };
+        return;
+      }
+
+      if (cancelled) return;
+
+      if (isInitial) {
+        data.value = json;
+        parsedFiles.value = parseDiff(json.diff);
+        loadReviewState();
+        applyAutoCollapse();
+        ensureMermaidLoaded();
+      } else {
+        // Polling update: merge in only the review_tips so we don't blow away
+        // reactive state on unrelated parts of the walkthrough.
+        const current = data.value;
+        if (current?.walkthrough && json?.walkthrough?.review_tips) {
+          data.value = {
+            ...current,
+            walkthrough: { ...current.walkthrough, review_tips: json.walkthrough.review_tips },
+          };
+        }
+      }
+
+      if (hasPendingTips(json)) {
+        pollTimer = setTimeout(() => load(false), 4000);
+      }
+    }
+
+    load(true);
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
   }, []);
 
   // Dark mode effect

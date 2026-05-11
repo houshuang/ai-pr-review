@@ -242,10 +242,13 @@ function renderOverview(wt) {
           .map((t) => {
             const isObj = typeof t === "object" && t !== null;
             const status = isObj ? t.status : "legacy";
+            const pending = isObj && t.pending;
             const tipText = isObj ? t.tip : t;
             const finding = isObj ? t.finding : null;
-            const icon = status === "verified" ? "✓" : status === "concern" ? "⚠" : status === "info" ? "ℹ" : "";
-            return `<li class="review-tip ${status}">${icon ? `<span class="tip-icon tip-${status}">${icon}</span>` : ""}<div class="tip-content"><span class="tip-text">${md(tipText)}</span>${finding ? `<span class="tip-finding">${md(finding)}</span>` : ""}</div></li>`;
+            const icon = pending ? "⋯" : status === "verified" ? "✓" : status === "concern" ? "⚠" : status === "info" ? "ℹ" : "";
+            const iconClass = pending ? "tip-pending" : `tip-${status}`;
+            const findingText = pending ? "Background investigation was still in progress at export time." : finding;
+            return `<li class="review-tip ${status} ${pending ? "pending" : ""}">${icon ? `<span class="tip-icon ${iconClass}">${icon}</span>` : ""}<div class="tip-content"><span class="tip-text">${md(tipText)}</span>${findingText ? `<span class="tip-finding${pending ? " tip-finding-pending" : ""}">${md(findingText)}</span>` : ""}</div></li>`;
           })
           .join("")}</ul>
       </div>`;
@@ -684,6 +687,153 @@ import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs").then(
     }
   });
 }).catch(() => {});
+
+// ── Mermaid zoom overlay — mirrors installMermaidZoom in src/mermaid.js ──
+(function() {
+  if (window.__mermaidZoomInstalled) return;
+  window.__mermaidZoomInstalled = true;
+
+  document.addEventListener("click", function(e) {
+    var target = e.target.closest(".mermaid-rendered");
+    if (!target) return;
+    var sel = window.getSelection && window.getSelection();
+    if (sel && sel.toString().length > 0) return;
+    openOverlay(target);
+  });
+
+  function openOverlay(sourceDiv) {
+    var svg = sourceDiv.querySelector("svg");
+    if (!svg) return;
+
+    var overlay = document.createElement("div");
+    overlay.className = "mermaid-zoom-overlay";
+    overlay.innerHTML = '<div class="mermaid-zoom-backdrop"></div>' +
+      '<div class="mermaid-zoom-stage"><div class="mermaid-zoom-canvas"></div></div>' +
+      '<div class="mermaid-zoom-hint">Scroll to zoom · Drag to pan · Double-click to reset · Esc to close</div>' +
+      '<div class="mermaid-zoom-controls">' +
+        '<button type="button" class="mermaid-zoom-btn" data-act="out" title="Zoom out">−</button>' +
+        '<button type="button" class="mermaid-zoom-btn" data-act="reset" title="Reset">⊙</button>' +
+        '<button type="button" class="mermaid-zoom-btn" data-act="in" title="Zoom in">+</button>' +
+        '<button type="button" class="mermaid-zoom-btn mermaid-zoom-close" data-act="close" title="Close">✕</button>' +
+      '</div>';
+
+    var canvas = overlay.querySelector(".mermaid-zoom-canvas");
+    var clone = svg.cloneNode(true);
+    clone.removeAttribute("style");
+    var vb = clone.getAttribute("viewBox");
+    if (vb) {
+      var parts = vb.split(/\\s+/).map(Number);
+      if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+        clone.setAttribute("width", parts[2]);
+        clone.setAttribute("height", parts[3]);
+      }
+    } else {
+      var box = svg.getBoundingClientRect();
+      if (box.width && box.height) {
+        clone.setAttribute("width", box.width);
+        clone.setAttribute("height", box.height);
+      }
+    }
+    canvas.appendChild(clone);
+    document.body.appendChild(overlay);
+    document.body.style.overflow = "hidden";
+
+    var state = { scale: 1, tx: 0, ty: 0 };
+    var MIN = 0.2, MAX = 8;
+    var stage = overlay.querySelector(".mermaid-zoom-stage");
+
+    function apply() {
+      canvas.style.transform = "translate(" + state.tx + "px, " + state.ty + "px) scale(" + state.scale + ")";
+    }
+
+    function fit() {
+      var box = clone.getBoundingClientRect();
+      var margin = 80;
+      var f = Math.min(
+        (window.innerWidth - margin) / Math.max(box.width / state.scale, 1),
+        (window.innerHeight - margin) / Math.max(box.height / state.scale, 1),
+        1.5
+      );
+      state.scale = Math.max(MIN, f);
+      apply();
+    }
+
+    requestAnimationFrame(function() {
+      state.tx = 0; state.ty = 0; state.scale = 1;
+      fit();
+      overlay.classList.add("is-open");
+    });
+
+    function zoomAt(factor, cx, cy) {
+      var rect = stage.getBoundingClientRect();
+      var x = cx - rect.left - rect.width / 2;
+      var y = cy - rect.top - rect.height / 2;
+      var next = Math.min(MAX, Math.max(MIN, state.scale * factor));
+      var k = next / state.scale;
+      state.tx = x - (x - state.tx) * k;
+      state.ty = y - (y - state.ty) * k;
+      state.scale = next;
+      apply();
+    }
+
+    function reset() { state.tx = 0; state.ty = 0; state.scale = 1; fit(); }
+
+    stage.addEventListener("wheel", function(e) {
+      e.preventDefault();
+      var factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      zoomAt(factor, e.clientX, e.clientY);
+    }, { passive: false });
+
+    var drag = null;
+    stage.addEventListener("pointerdown", function(e) {
+      if (e.target.closest(".mermaid-zoom-controls")) return;
+      drag = { x: e.clientX, y: e.clientY, tx: state.tx, ty: state.ty };
+      stage.setPointerCapture(e.pointerId);
+      stage.classList.add("is-dragging");
+    });
+    stage.addEventListener("pointermove", function(e) {
+      if (!drag) return;
+      state.tx = drag.tx + (e.clientX - drag.x);
+      state.ty = drag.ty + (e.clientY - drag.y);
+      apply();
+    });
+    function endDrag() { drag = null; stage.classList.remove("is-dragging"); }
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+
+    stage.addEventListener("dblclick", function(e) {
+      if (e.target.closest(".mermaid-zoom-controls")) return;
+      reset();
+    });
+
+    overlay.querySelector(".mermaid-zoom-controls").addEventListener("click", function(e) {
+      var btn = e.target.closest("[data-act]");
+      if (!btn) return;
+      var act = btn.dataset.act;
+      var cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+      if (act === "in") zoomAt(1.25, cx, cy);
+      else if (act === "out") zoomAt(1 / 1.25, cx, cy);
+      else if (act === "reset") reset();
+      else if (act === "close") close();
+    });
+
+    function onKey(e) {
+      if (e.key === "Escape") close();
+      else if (e.key === "+" || e.key === "=") zoomAt(1.25, window.innerWidth / 2, window.innerHeight / 2);
+      else if (e.key === "-") zoomAt(1 / 1.25, window.innerWidth / 2, window.innerHeight / 2);
+      else if (e.key === "0") reset();
+    }
+    document.addEventListener("keydown", onKey);
+    overlay.querySelector(".mermaid-zoom-backdrop").addEventListener("click", function() { close(); });
+
+    function close() {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+      overlay.classList.remove("is-open");
+      setTimeout(function() { overlay.remove(); }, 150);
+    }
+  }
+})();
 
 // ── Sidebar active section tracking ──
 const tocLinks = document.querySelectorAll(".static-sidebar .toc a");

@@ -89,6 +89,56 @@ function ghApiProxy() {
   };
 }
 
+// Serve walkthrough JSON files directly from disk on every request.
+// Vite's built-in static handler caches the public/ directory listing at
+// startup, so files generated after `pnpm dev` started get served as the
+// SPA's index.html instead of as JSON. Reading from disk per request avoids
+// the need to restart the dev server when a new walkthrough is generated.
+function walkthroughsEndpoint() {
+  return {
+    name: 'walkthroughs-endpoint',
+    configureServer(server) {
+      const publicDir = resolve(__dirname, 'public');
+      server.middlewares.use((req, res, next) => {
+        if (!req.url) return next();
+        const url = req.url.split('?')[0];
+
+        let relPath = null;
+        if (url.startsWith('/walkthroughs/') && url.endsWith('.json')) {
+          relPath = url.slice(1); // walkthroughs/<slug>.json
+        } else if (url === '/walkthrough-data.json') {
+          relPath = 'walkthrough-data.json';
+        }
+        if (!relPath) return next();
+
+        // Prevent path traversal — relPath must stay inside publicDir.
+        const abs = resolve(publicDir, relPath);
+        if (!abs.startsWith(publicDir + '/') && abs !== publicDir) {
+          res.statusCode = 400;
+          res.end('Bad request');
+          return;
+        }
+        if (!existsSync(abs)) {
+          res.statusCode = 404;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Not found' }));
+          return;
+        }
+        try {
+          const content = readFileSync(abs, 'utf-8');
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-store');
+          res.end(content);
+        } catch (err) {
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    },
+  };
+}
+
 // Endpoint to export a static HTML walkthrough
 function exportEndpoint() {
   return {
@@ -261,5 +311,5 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
-  plugins: [preact(), ghApiProxy(), exportEndpoint(), chatMiddleware()],
+  plugins: [preact(), walkthroughsEndpoint(), ghApiProxy(), exportEndpoint(), chatMiddleware()],
 });
