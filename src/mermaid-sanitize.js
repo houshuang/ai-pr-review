@@ -9,6 +9,30 @@
 const NEEDS_QUOTING = /[|#<>"]/;
 
 /**
+ * Fix bracket-type mismatches: e.g. S5{"..."] → S5{"..."}.
+ * The AI sometimes emits inconsistent open/close pairs on shape nodes;
+ * Mermaid then errors with "expecting DIAMOND_STOP, got SQE" and friends.
+ * We rewrite the closer to match the opener (open wins, since the shape
+ * intent is carried by the opener and the close is the typo).
+ *
+ * Runs on the WHOLE source, not per-line: a quoted label may span multiple
+ * lines (S5{"a\nb"]), so the opener and the mismatched closer can sit on
+ * different lines. The quoted branch ([^"]*) matches across newlines.
+ */
+const CLOSER_FOR = { "[": "]", "{": "}", "(": ")" };
+function fixBracketMismatch(source) {
+  return source.replace(
+    /\b([A-Za-z_]\w*)([\[\{\(])(?:("[^"]*")|([^\]\}\)]*?))([\]\}\)])/g,
+    (match, id, open, quoted, unquoted, close) => {
+      const want = CLOSER_FOR[open];
+      if (close === want) return match;
+      const content = quoted !== undefined ? quoted : unquoted;
+      return `${id}${open}${content}${want}`;
+    }
+  );
+}
+
+/**
  * Quote unquoted node labels that contain characters Mermaid would misparse.
  * Converts e.g. A[text with | pipe] → A["text with | pipe"]
  *
@@ -18,9 +42,16 @@ const NEEDS_QUOTING = /[|#<>"]/;
 export function sanitizeMermaidSource(source) {
   if (!source) return source;
 
+  // Whole-source pass: labels may span lines, so the opener and a mismatched
+  // closer can land on different lines — a per-line matcher would miss it.
+  source = fixBracketMismatch(source);
+
   return source
     .split("\n")
     .map((line) => {
+      // Trailing whitespace on a subgraph header makes Mermaid 11
+      // swallow the next line into the header and fail to parse.
+      line = line.replace(/[ \t]+$/, "");
       const trimmed = line.trim();
 
       // Skip Mermaid directives and structural keywords
@@ -39,6 +70,34 @@ export function sanitizeMermaidSource(source) {
       line = line.replace(/\s*[─━—–]{1,3}[⟹>]\s*/g, " ==> ");
       // Also fix &quot; that may have leaked from prior broken sanitization
       line = line.replace(/&quot;/g, "#quot;");
+
+      // Strip stray excess close-brackets. AI sometimes emits e.g.
+      //   START("[#quot;next op#quot;"))   ← one `(` but two `))`
+      // Depth-aware so doubled shapes like `((...))` (circle), `[[...]]`
+      // (subroutine), `{{...}}` (hexagon) survive. Chars inside `"..."` are
+      // skipped (only literal " toggles; #quot; is six literal chars to the lexer).
+      {
+        const drop = new Set();
+        const depth = { "(": 0, "[": 0, "{": 0 };
+        const openFor = { ")": "(", "]": "[", "}": "{" };
+        let inStr = false;
+        for (let i = 0; i < line.length; i++) {
+          const c = line[i];
+          if (c === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (c in depth) depth[c]++;
+          else if (c in openFor) {
+            const o = openFor[c];
+            if (depth[o] > 0) depth[o]--;
+            else drop.add(i);
+          }
+        }
+        if (drop.size) {
+          let out = "";
+          for (let i = 0; i < line.length; i++) if (!drop.has(i)) out += line[i];
+          line = out;
+        }
+      }
 
       // Quote square-bracket labels: A[text] → A["text"]
       line = line.replace(

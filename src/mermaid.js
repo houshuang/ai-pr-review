@@ -48,6 +48,8 @@ async function loadMermaid() {
       const isDark = darkMode.value;
       window.mermaid.initialize({
         startOnLoad: false,
+        maxTextSize: 500000,
+        maxEdges: 5000,
         theme: isDark ? "dark" : "neutral",
         themeVariables: getThemeVars(isDark),
       });
@@ -66,6 +68,8 @@ function reinitMermaid(isDark) {
   if (currentThemeIsDark === isDark) return;
   window.mermaid.initialize({
     startOnLoad: false,
+    maxTextSize: 500000,
+    maxEdges: 5000,
     theme: isDark ? "dark" : "neutral",
     themeVariables: getThemeVars(isDark),
   });

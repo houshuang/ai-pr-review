@@ -26,12 +26,20 @@ usage() {
   echo "       review --diff path/to/diff.patch"
   echo "       review --export <slug> [--output path.html] [--mode side-by-side|unified]"
   echo ""
+  echo "Flags:"
+  echo "  --force             Skip the cached walkthrough and regenerate from scratch"
+  echo ""
   echo "Environment:"
   echo "  ANTHROPIC_API_KEY   Required. Your Anthropic API key."
   echo "  REVIEW_PORT         Dev server port (default: 5200)"
   echo ""
   echo "Logs are written to: $LOG_DIR/"
 }
+
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  usage
+  exit 0
+fi
 
 if [ -z "$1" ]; then
   # No args — just start the dev server

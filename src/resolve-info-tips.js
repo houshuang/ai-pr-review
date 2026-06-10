@@ -40,7 +40,7 @@ function loadEnvKey() {
   return null;
 }
 
-const MAX_TOOL_ROUNDS = 30;
+const MAX_TOOL_ROUNDS = 50;
 const MAX_CONCURRENCY = 3;
 const MAX_GREP_LINES = 120;
 const MAX_READ_LINES = 400;
@@ -201,10 +201,21 @@ Do NOT produce the final JSON until you've actually looked at the code. Don't gu
   let outputTokens = 0;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // On the final round, drop the tools and tell the model to commit. This
+    // salvages the investigation instead of discarding it: it always has one
+    // turn where its only move is to emit the verdict JSON.
+    const lastRound = round === MAX_TOOL_ROUNDS - 1;
+    if (lastRound) {
+      messages.push({
+        role: "user",
+        content:
+          "You've used your full investigation budget. Stop searching and produce your final verdict now as the JSON block, based on everything you've found so far. If you're still uncertain, say so in the finding and use status \"info\".",
+      });
+    }
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 2048,
-      tools: TOOLS,
+      tools: lastRound ? undefined : TOOLS,
       messages,
     });
     inputTokens += response.usage?.input_tokens || 0;

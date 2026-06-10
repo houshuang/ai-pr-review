@@ -631,6 +631,35 @@ function sanitizeMermaid(src) {
     line = line.replace(/\\s*[\\u2500\\u2501\\u2014\\u2013]{1,3}[\\u2192\\u27F6>]\\s*/g, " --> ");
     line = line.replace(/\\s*[\\u2500\\u2501\\u2014\\u2013]{1,3}[\\u27F9>]\\s*/g, " ==> ");
     line = line.replace(/&quot;/g, '#quot;');
+    // Fix bracket-type mismatches (e.g. ResolvePos{"..."] → ResolvePos{"..."}).
+    var CLOSER_FOR = { "[": "]", "{": "}", "(": ")" };
+    line = line.replace(/\\b([A-Za-z_]\\w*)([\\[\\{\\(])(?:("[^"]*")|([^\\]\\}\\)]*?))([\\]\\}\\)])/g, function(m, id, open, quoted, unquoted, close) {
+      var want = CLOSER_FOR[open];
+      if (close === want) return m;
+      var content = quoted !== undefined ? quoted : unquoted;
+      return id + open + content + want;
+    });
+    // Strip stray excess close-brackets (depth-aware so ((...)) etc. survive).
+    var dDepth = { "(": 0, "[": 0, "{": 0 };
+    var openFor = { ")": "(", "]": "[", "}": "{" };
+    var drop = {};
+    var inStr = false;
+    for (var i = 0; i < line.length; i++) {
+      var c = line[i];
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c in dDepth) dDepth[c]++;
+      else if (c in openFor) {
+        var o = openFor[c];
+        if (dDepth[o] > 0) dDepth[o]--;
+        else drop[i] = true;
+      }
+    }
+    if (Object.keys(drop).length) {
+      var out = "";
+      for (var j = 0; j < line.length; j++) if (!drop[j]) out += line[j];
+      line = out;
+    }
     // Quote unquoted labels with special chars
     line = line.replace(/\\b([A-Za-z_]\\w*)\\[(?!")([^\\]]+)\\]/g, function(m, id, l) {
       return NEEDS.test(l) ? id + '["' + l.replace(/"/g, '#quot;') + '"]' : m;
@@ -658,6 +687,8 @@ function sanitizeMermaid(src) {
 import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs").then(({ default: mermaid }) => {
   mermaid.initialize({
     startOnLoad: false,
+    maxTextSize: 500000,
+    maxEdges: 5000,
     theme: "neutral",
     themeVariables: {
       fontFamily: "'JetBrains Mono', monospace",
