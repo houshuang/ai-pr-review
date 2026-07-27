@@ -5,3 +5,6 @@ dist/
 public/walkthrough-data.json
 public/walkthroughs/
 logs/
+# Static HTML exports and mockups land in the repo root
+/*.html
+!/index.html

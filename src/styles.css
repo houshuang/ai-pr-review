@@ -51,9 +51,26 @@ body {
 
 /* ─── Layout ─── */
 .page-container {
-  max-width: 1400px;
+  max-width: 820px;
   margin: 0 auto;
-  padding: 0 48px 72px;
+  padding: 0 24px 72px;
+}
+
+/* Side-by-side diffs break out of the reading column to near the viewport edges.
+   Narrative, callouts and headers stay in the narrow centered column above. */
+html.diff-sbs .hunk-group,
+html.diff-sbs .remaining-file {
+  width: 96vw;
+  margin-left: calc(50% - 48vw);
+  margin-right: calc(50% - 48vw);
+}
+
+/* Within a widened group, keep the comment threads / composer at reading width. */
+html.diff-sbs .hunk-group > .file-comments,
+html.diff-sbs .hunk-group > .comment-composer {
+  max-width: 820px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* ─── Header ─── */
@@ -2251,7 +2268,7 @@ html.view-developer h3 {
   font-weight: 600;
 }
 
-html.view-developer .page-container { max-width: 1600px; }
+html.view-developer .page-container { max-width: none; }
 html.view-developer .page-header { padding: 2rem 0 1.5rem; }
 html.view-developer .page-header h1 { font-size: 1.6rem; }
 html.view-developer h2 { font-size: 1.1rem; }

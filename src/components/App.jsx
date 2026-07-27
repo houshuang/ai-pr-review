@@ -3,7 +3,7 @@ import { useEffect, useCallback } from "preact/hooks";
 import {
   data, parsedFiles, viewMode, darkMode, actionPanelOpen,
   reviewState, getFileCoverage, loadReviewState, applyAutoCollapse,
-  loadError,
+  loadError, diffViewMode,
 } from "../state";
 import { parseDiff } from "../diff";
 import { ensureMermaidLoaded } from "../mermaid";
@@ -131,6 +131,11 @@ export function App() {
       .replace(/\bview-\w+\b/g, "").trim();
     document.documentElement.classList.add(`view-${viewMode.value}`);
   }, [viewMode.value]);
+
+  // Diff mode class effect: lets side-by-side diffs break out of the reading column
+  useEffect(() => {
+    document.documentElement.classList.toggle("diff-sbs", diffViewMode.value === "side-by-side");
+  }, [diffViewMode.value]);
 
   // Callback: open review modal
   const openReviewModal = useCallback((event, title) => {
