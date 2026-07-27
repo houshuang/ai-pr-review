@@ -5,6 +5,7 @@ import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import Anthropic from '@anthropic-ai/sdk';
+import { GENERATION_MODEL } from './src/models.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logsDir = resolve(__dirname, 'logs');
@@ -275,7 +276,7 @@ function chatMiddleware() {
 
             const client = new Anthropic({ apiKey });
             const stream = await client.messages.stream({
-              model: 'claude-sonnet-4-6',
+              model: GENERATION_MODEL,
               max_tokens: 4096,
               system: systemPrompt,
               messages,

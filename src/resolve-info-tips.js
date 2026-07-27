@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } fr
 import { execFileSync } from "child_process";
 import { resolve, dirname, relative, join } from "path";
 import { fileURLToPath } from "url";
+import { GENERATION_MODEL } from "./models.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -213,7 +214,7 @@ Do NOT produce the final JSON until you've actually looked at the code. Don't gu
       });
     }
     const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
+      model: GENERATION_MODEL,
       max_tokens: 2048,
       tools: lastRound ? undefined : TOOLS,
       messages,

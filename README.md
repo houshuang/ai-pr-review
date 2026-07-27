@@ -123,7 +123,7 @@ Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions abo
 - **Resilient API calls** — streaming responses, TCP keepalive (undici Agent), 15-minute timeout, 3 retries with exponential backoff, detailed error diagnostics logged to `logs/`
 - **Resilient JSON parsing** — if Claude returns malformed JSON, the full response is dumped to `logs/failed-response-<timestamp>.txt` and a two-stage repair pipeline runs (local position-based escape pass, then a Haiku 4.5 "fix syntax only" fallback) before the run is failed
 - **Verified review tips** — Claude generates review concerns, then a second pass classifies each as `verified` (✓, addressed), `concern` (⚠, real issue), or `info` (ℹ, can't tell from diff alone)
-- **Background investigation of info tips** — Any tip that couldn't be resolved from the diff spawns a detached background process (`src/resolve-info-tips.js`) that investigates the actual repo using Claude tool-use (`grep`, `read_file`, `list_files`), with a budget of up to 30 tool rounds per tip so it can chase every claim. The viewer opens immediately with spinners on pending tips and polls the JSON every 4s, auto-updating as each tip resolves with specific `file:line` findings. Runs only when the invoking directory is a clone of the PR's repo (for URL-based reviews) or always (for `--local`/`--diff` mode)
+- **Background investigation of info tips** — Any tip that couldn't be resolved from the diff spawns a detached background process (`src/resolve-info-tips.js`) that investigates the actual codebase using Claude tool-use (`grep`, `read_file`, `list_files`), with a budget of up to 50 tool rounds per tip so it can chase every claim. The viewer opens immediately with spinners on pending tips and polls the JSON every 4s, auto-updating as each tip resolves with specific `file:line` findings. For URL-based reviews, if the invoking directory isn't a clone of the PR's repo, the tool shallow-clones the repo at the PR head into `.cache/repos/` (cached across runs) so tips are always investigated against the real code; `--local`/`--diff` mode uses the invoking directory
 - **Hot-loaded walkthroughs** — The dev server reads `public/walkthroughs/*.json` from disk on every request via a custom Vite middleware, so newly generated walkthroughs are picked up without restarting `pnpm dev`
 
 ## Usage
@@ -167,6 +167,7 @@ Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions abo
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (required) | — |
 | `REVIEW_PORT` | Dev server port | `5200` |
+| `REVIEW_MODEL` | Claude model for generation, tip investigation, and chat | `claude-opus-5` |
 
 Copy `.env.example` to `.env` and add your key, or set it as an environment variable.
 
