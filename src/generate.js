@@ -14,7 +14,8 @@ import Anthropic, {
   InternalServerError,
 } from "@anthropic-ai/sdk";
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, openSync } from "fs";
-import { execSync, spawn } from "child_process";
+import { execSync, spawn, exec as execCb } from "child_process";
+import { promisify } from "util";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { sanitizeWalkthroughDiagrams } from "./mermaid-sanitize.js";
@@ -22,6 +23,21 @@ import { GENERATION_MODEL, REPAIR_MODEL } from "./models.js";
 import { Agent as UndiciAgent } from "undici";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const execAsync = promisify(execCb);
+
+// Run fn over items with bounded concurrency, preserving order of results.
+async function mapPool(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
 
 // --- Logging ---
 const LOG_DIR = resolve(__dirname, "..", "logs");
@@ -96,6 +112,31 @@ function extractText(response) {
     .join("\n");
 }
 
+// All plausible JSON payloads in a response, largest first. Thinking models
+// can emit several fenced blocks (e.g. a small skeleton sketched before the
+// real one), so taking the first fence silently truncates the walkthrough —
+// callers try candidates in size order against a shape check instead.
+function extractJSONCandidates(text) {
+  const candidates = [];
+  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/g;
+  let m;
+  while ((m = fenceRe.exec(text))) {
+    if (m[1].trim()) candidates.push(m[1].trim());
+  }
+  const braceMatch = text.match(/\{[\s\S]*\}/);
+  if (braceMatch) candidates.push(braceMatch[0]);
+  candidates.push(text.trim());
+  return [...new Set(candidates)].sort((a, b) => b.length - a.length);
+}
+
+function dumpRawResponse(text, label) {
+  const dumpPath = resolve(LOG_DIR, `raw-response-${label}-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`);
+  try {
+    writeFileSync(dumpPath, text);
+  } catch {}
+  return dumpPath;
+}
+
 async function repairJSONWithClaude(text, client) {
   log("INFO", "Local repair failed — asking Claude to fix the JSON...");
   try {
@@ -109,8 +150,12 @@ async function repairJSONWithClaude(text, client) {
     const response = await stream.finalMessage();
     log("INFO", `Repair response: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
     const fixed = extractText(response);
-    const jsonMatch = fixed.match(/```json\s*([\s\S]*?)```/) || [null, fixed];
-    return JSON.parse(jsonMatch[1].trim());
+    for (const candidate of extractJSONCandidates(fixed)) {
+      try {
+        return JSON.parse(candidate);
+      } catch {}
+    }
+    return null;
   } catch (err) {
     log("WARN", `Claude repair failed: ${err.message}`);
     return null;
@@ -311,34 +356,18 @@ function loadEnvKey() {
   return null;
 }
 
-// Ensure a local checkout of the PR's repo at the PR head, for the background
-// tip investigator. Shallow-clones into .cache/repos/ on first use, then just
-// fetches pull/<N>/head (which also works for PRs from forks) on later runs.
-function ensureRepoClone(owner, repo, number) {
-  const cacheDir = resolve(__dirname, "..", ".cache", "repos");
-  mkdirSync(cacheDir, { recursive: true });
-  const dir = resolve(cacheDir, `${owner}-${repo}`);
-  const gitOpts = { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 50 * 1024 * 1024 };
-  if (!existsSync(resolve(dir, ".git"))) {
-    console.log(`\n⟳ Shallow-cloning ${owner}/${repo} for tip investigation...`);
-    execSync(`gh repo clone ${owner}/${repo} "${dir}" -- --depth 1 --no-checkout --quiet`, gitOpts);
-  }
-  execSync(`git fetch --depth 1 --quiet origin pull/${number}/head`, { ...gitOpts, cwd: dir });
-  execSync(`git checkout --detach --force --quiet FETCH_HEAD`, { ...gitOpts, cwd: dir });
-  return dir;
-}
-
-function fetchGitHistory(owner, repo, number, pr) {
+async function fetchGitHistory(owner, repo, number, pr) {
   const result = { commits: [], fileAges: {}, churn: {} };
   const execOpts = { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 };
 
   // 1. Fetch detailed commits in the PR
+  let commits = [];
   try {
-    const commitsJson = execSync(
+    const { stdout: commitsJson } = await execAsync(
       `gh api repos/${owner}/${repo}/pulls/${number}/commits --paginate`,
       execOpts
     );
-    const commits = JSON.parse(commitsJson);
+    commits = JSON.parse(commitsJson);
     result.commits = commits.map((c) => ({
       sha: c.sha.slice(0, 7),
       fullSha: c.sha,
@@ -346,19 +375,26 @@ function fetchGitHistory(owner, repo, number, pr) {
       date: c.commit.author.date,
       message: c.commit.message.split("\n")[0],
     }));
+  } catch {
+    console.warn("Could not fetch PR commits");
+  }
 
-    // 2. Detect file churn — how many commits touched each file
+  // 2 + 3. Per-commit churn details and per-file ages are independent network
+  // calls — fetch them concurrently (they used to run serially, which
+  // dominated pre-generation time on multi-commit PRs).
+  const churnTask = mapPool(commits, 8, async (c) => {
+    try {
+      const { stdout } = await execAsync(`gh api repos/${owner}/${repo}/commits/${c.sha}`, execOpts);
+      return JSON.parse(stdout);
+    } catch {
+      return null; // Skip commits we can't fetch details for
+    }
+  }).then((details) => {
     const fileTouches = {};
-    for (const c of commits) {
-      try {
-        const detail = JSON.parse(
-          execSync(`gh api repos/${owner}/${repo}/commits/${c.sha}`, execOpts)
-        );
-        for (const f of detail.files || []) {
-          fileTouches[f.filename] = (fileTouches[f.filename] || 0) + 1;
-        }
-      } catch {
-        // Skip commits we can't fetch details for
+    for (const detail of details) {
+      if (!detail) continue;
+      for (const f of detail.files || []) {
+        fileTouches[f.filename] = (fileTouches[f.filename] || 0) + 1;
       }
     }
     for (const [path, count] of Object.entries(fileTouches)) {
@@ -366,15 +402,12 @@ function fetchGitHistory(owner, repo, number, pr) {
         result.churn[path] = { touchCount: count };
       }
     }
-  } catch {
-    console.warn("Could not fetch PR commits");
-  }
+  });
 
-  // 3. Fetch file ages — when was each changed file last modified on the base branch
-  const changedFiles = (pr.files || []).map((f) => f.path);
-  for (const filePath of changedFiles.slice(0, 30)) {
+  const changedFiles = (pr.files || []).map((f) => f.path).slice(0, 30);
+  const agesTask = mapPool(changedFiles, 8, async (filePath) => {
     try {
-      const historyJson = execSync(
+      const { stdout: historyJson } = await execAsync(
         `gh api "repos/${owner}/${repo}/commits?path=${encodeURIComponent(filePath)}&sha=${pr.baseRefName}&per_page=1"`,
         execOpts
       );
@@ -392,8 +425,9 @@ function fetchGitHistory(owner, repo, number, pr) {
     } catch {
       // New file or API error
     }
-  }
+  });
 
+  await Promise.all([churnTask, agesTask]);
   return result;
 }
 
@@ -414,39 +448,41 @@ async function fetchPRData(prUrl) {
   const pr = JSON.parse(prJson);
 
   // Fetch the full diff — fall back to local git if GitHub API rejects (too large)
-  let diff;
-  try {
-    diff = execSync(
-      `gh pr diff ${number} --repo ${owner}/${repo}`,
-      { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
-    );
-  } catch (diffErr) {
-    const errMsg = diffErr.stderr?.toString() || diffErr.message || "";
-    if (errMsg.includes("too_large") || errMsg.includes("406")) {
-      log("INFO", `GitHub diff API rejected PR (too large). Falling back to local git diff...`);
-      // Use the original CWD (where user ran the command) — likely the repo
-      const repoCwd = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
-      try {
-        execSync(`git fetch origin ${pr.baseRefName} ${pr.headRefName}`, {
-          encoding: "utf-8",
-          stdio: "pipe",
-          cwd: repoCwd,
-        });
-        diff = execSync(
-          `git diff origin/${pr.baseRefName}...origin/${pr.headRefName}`,
-          { encoding: "utf-8", maxBuffer: 100 * 1024 * 1024, cwd: repoCwd }
-        );
-        log("INFO", `Local git diff: ${(diff.length / 1024).toFixed(1)}KB (from ${repoCwd})`);
-      } catch (gitErr) {
-        throw new Error(
-          `GitHub diff API rejected this PR as too large, and local git diff also failed.\n` +
-          `GitHub error: ${errMsg.trim()}\n` +
-          `Git error: ${gitErr.message}\n` +
-          `Tried repo at: ${repoCwd}\n\n` +
-          `Try running from inside the repo: cd <repo> && review --local ${pr.baseRefName}`
-        );
+  async function fetchDiff() {
+    try {
+      const { stdout } = await execAsync(
+        `gh pr diff ${number} --repo ${owner}/${repo}`,
+        { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
+      );
+      return stdout;
+    } catch (diffErr) {
+      const errMsg = diffErr.stderr?.toString() || diffErr.message || "";
+      if (errMsg.includes("too_large") || errMsg.includes("406")) {
+        log("INFO", `GitHub diff API rejected PR (too large). Falling back to local git diff...`);
+        // Use the original CWD (where user ran the command) — likely the repo
+        const repoCwd = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
+        try {
+          execSync(`git fetch origin ${pr.baseRefName} ${pr.headRefName}`, {
+            encoding: "utf-8",
+            stdio: "pipe",
+            cwd: repoCwd,
+          });
+          const diff = execSync(
+            `git diff origin/${pr.baseRefName}...origin/${pr.headRefName}`,
+            { encoding: "utf-8", maxBuffer: 100 * 1024 * 1024, cwd: repoCwd }
+          );
+          log("INFO", `Local git diff: ${(diff.length / 1024).toFixed(1)}KB (from ${repoCwd})`);
+          return diff;
+        } catch (gitErr) {
+          throw new Error(
+            `GitHub diff API rejected this PR as too large, and local git diff also failed.\n` +
+            `GitHub error: ${errMsg.trim()}\n` +
+            `Git error: ${gitErr.message}\n` +
+            `Tried repo at: ${repoCwd}\n\n` +
+            `Try running from inside the repo: cd <repo> && review --local ${pr.baseRefName}`
+          );
+        }
       }
-    } else {
       throw new Error(`Failed to fetch PR diff: ${errMsg.trim()}`);
     }
   }
@@ -454,9 +490,10 @@ async function fetchPRData(prUrl) {
   // Re-check head SHA after the diff fetch. If it changed, the PR was updated
   // mid-fetch and our diff may not match `pr.headRefOid`. Keep the older SHA so
   // the StaleBanner correctly flags the walkthrough as out of date on view.
-  if (pr.headRefOid) {
+  async function recheckHeadSha() {
+    if (!pr.headRefOid) return;
     try {
-      const verifyJson = execSync(
+      const { stdout: verifyJson } = await execAsync(
         `gh pr view ${number} --repo ${owner}/${repo} --json headRefOid`,
         { encoding: "utf-8" }
       );
@@ -472,34 +509,30 @@ async function fetchPRData(prUrl) {
     }
   }
 
-  // Fetch existing review comments
-  console.log("Fetching review comments...");
-  let comments = [];
-  try {
-    const commentsJson = execSync(
+  // Diff, comments, reviews, and git history metadata are independent — fetch
+  // them all concurrently.
+  console.log("Fetching diff, comments, reviews, and git history...");
+  const [diff, comments, reviews, gitHistory] = await Promise.all([
+    fetchDiff().then(async (d) => {
+      await recheckHeadSha();
+      return d;
+    }),
+    execAsync(
       `gh api repos/${owner}/${repo}/pulls/${number}/comments --paginate`,
       { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
-    );
-    comments = JSON.parse(commentsJson);
-  } catch {
-    console.warn("Could not fetch review comments");
-  }
-
-  // Fetch reviews (approve/request changes/comment)
-  let reviews = [];
-  try {
-    const reviewsJson = execSync(
+    ).then((r) => JSON.parse(r.stdout)).catch(() => {
+      console.warn("Could not fetch review comments");
+      return [];
+    }),
+    execAsync(
       `gh api repos/${owner}/${repo}/pulls/${number}/reviews --paginate`,
       { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
-    );
-    reviews = JSON.parse(reviewsJson);
-  } catch {
-    console.warn("Could not fetch reviews");
-  }
-
-  // Fetch git history metadata
-  console.log("Fetching git history metadata...");
-  const gitHistory = fetchGitHistory(owner, repo, number, pr);
+    ).then((r) => JSON.parse(r.stdout)).catch(() => {
+      console.warn("Could not fetch reviews");
+      return [];
+    }),
+    fetchGitHistory(owner, repo, number, pr),
+  ]);
 
   return {
     source: "github",
@@ -759,66 +792,6 @@ function formatGitHistoryForPrompt(gitHistory) {
   return parts.length > 0 ? "\n" + parts.join("\n") + "\n" : "";
 }
 
-async function verifyReviewTips(tips, diff, client) {
-  log("INFO", `Verifying ${tips.length} review tips against the diff...`);
-
-  const prompt = `You are a code reviewer verifying specific review concerns against the actual diff.
-
-For EACH tip below, examine the diff and determine:
-- "verified": You checked and the code looks correct — the concern is addressed or not an issue.
-- "concern": You checked and there IS a real issue, risk, or the concern is valid.
-- "info": Cannot be fully determined from the diff alone (e.g. requires runtime testing, checking files not in the diff, or external context).
-
-Be precise and cite specific evidence from the diff. If a tip mentions a file/line, look at that exact location.
-
-Return ONLY a JSON array (no wrapping object, no markdown fences):
-[
-  {
-    "tip": "the original tip text, verbatim",
-    "status": "verified|concern|info",
-    "finding": "1-2 sentences: what you found, with file:line references to evidence"
-  }
-]
-
-## Tips to Verify
-${tips.map((t, i) => `${i + 1}. ${t}`).join("\n")}
-
-## Diff
-\`\`\`diff
-${diff}
-\`\`\``;
-
-  try {
-    const stream = client.messages.stream({
-      model: GENERATION_MODEL,
-      max_tokens: 4096,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const response = await stream.finalMessage();
-    const text = extractText(response);
-    log("INFO", `Tip verification: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-
-    // Parse JSON — may be wrapped in ```json fences
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || [null, text];
-    const parsed = JSON.parse(jsonMatch[1].trim());
-    const verified = Array.isArray(parsed) ? parsed : parsed.verified_tips || parsed.tips || [];
-
-    if (verified.length > 0) {
-      if (verified.length !== tips.length) {
-        log("WARN", `Verification returned ${verified.length} tips but expected ${tips.length}`);
-      }
-      return verified;
-    }
-    log("WARN", "Verification returned empty results, using unverified tips");
-  } catch (err) {
-    log("WARN", `Tip verification failed (${err.message}), using unverified tips`);
-  }
-
-  // Fallback: return original tips as info-status objects
-  return tips.map((t) => ({ tip: t, status: "info", finding: "Verification unavailable" }));
-}
-
 async function generateWalkthrough(prData, previousWalkthrough = null) {
   const apiKey = loadEnvKey();
   if (!apiKey) {
@@ -942,16 +915,28 @@ Generate the walkthrough JSON. Important reminders:
   log("INFO", `API response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
   const text = extractText(response);
 
-  // Extract JSON from the response (it might be wrapped in ```json blocks)
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || [null, text];
-  const jsonStr = jsonMatch[1].trim();
+  dumpRawResponse(text, "walkthrough");
 
-  let walkthrough;
-  try {
-    walkthrough = JSON.parse(jsonStr);
-  } catch (e1) {
-    const objMatch = text.match(/\{[\s\S]*\}/);
-    const candidate = objMatch ? objMatch[0] : jsonStr;
+  // Extract the walkthrough JSON: the largest candidate that parses AND has
+  // sections. A tiny valid object from an earlier fence must not win.
+  const isWalkthrough = (o) => o && typeof o === "object" && Array.isArray(o.sections);
+  const candidates = extractJSONCandidates(text);
+  let walkthrough = null;
+  let firstError = null;
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isWalkthrough(parsed)) {
+        walkthrough = parsed;
+        break;
+      }
+    } catch (e) {
+      if (!firstError) firstError = e;
+    }
+  }
+  if (!walkthrough) {
+    const e1 = firstError || new Error("no walkthrough-shaped JSON in response");
+    const candidate = candidates[0] || text;
     walkthrough = tryRepairJSON(candidate);
     if (walkthrough) {
       log("INFO", `JSON repaired locally (original parse error: ${e1.message})`);
@@ -969,23 +954,25 @@ Generate the walkthrough JSON. Important reminders:
         );
       }
     }
+    if (!isWalkthrough(walkthrough)) {
+      const dumpPath = dumpFailedResponse(text, new Error("parsed JSON is not a walkthrough (no sections array)"));
+      throw new Error(
+        `Response parsed as JSON but is not a walkthrough (no sections array).\n` +
+        `Raw response saved to: ${dumpPath}\n` +
+        `Re-run with --force to regenerate.`
+      );
+    }
   }
 
   // Fix common Mermaid syntax issues (e.g. unquoted pipes in node labels)
   sanitizeWalkthroughDiagrams(walkthrough);
 
-  // Verify review tips against the actual diff
+  // Tip verification happens in the background resolver so the viewer opens
+  // immediately — mark every tip pending; the viewer polls as they resolve.
   if (walkthrough.review_tips?.length) {
-    walkthrough.review_tips = await verifyReviewTips(
-      walkthrough.review_tips,
-      focusedDiff,
-      client
+    walkthrough.review_tips = walkthrough.review_tips.map((t) =>
+      typeof t === "string" ? { tip: t, pending: true } : { ...t, pending: true }
     );
-    // Mark info-status tips as pending so the background resolver will pick
-    // them up and the viewer can show a spinner for them.
-    for (const t of walkthrough.review_tips) {
-      if (typeof t === "object" && t.status === "info") t.pending = true;
-    }
   }
 
   return walkthrough;
@@ -1205,14 +1192,26 @@ Return ONLY the JSON patch.`;
   const text = extractText(response);
 
   // Parse patch JSON with the same resilience as the full path
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || [null, text];
-  const jsonStr = jsonMatch[1].trim();
-  let patch;
-  try {
-    patch = JSON.parse(jsonStr);
-  } catch (e1) {
-    const objMatch = text.match(/\{[\s\S]*\}/);
-    const candidate = objMatch ? objMatch[0] : jsonStr;
+  dumpRawResponse(text, "patch");
+  const isPatch = (o) => o && typeof o === "object" &&
+    ["updated_sections", "added_sections", "removed_section_ids", "file_map_changes", "review_tips"].some((k) => k in o);
+  const patchCandidates = extractJSONCandidates(text);
+  let patch = null;
+  let patchError = null;
+  for (const candidate of patchCandidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isPatch(parsed)) {
+        patch = parsed;
+        break;
+      }
+    } catch (e) {
+      if (!patchError) patchError = e;
+    }
+  }
+  if (!patch) {
+    const e1 = patchError || new Error("no patch-shaped JSON in response");
+    const candidate = patchCandidates[0] || text;
     patch = tryRepairJSON(candidate);
     if (!patch) {
       const dumpPath = dumpFailedResponse(text, e1);
@@ -1227,14 +1226,12 @@ Return ONLY the JSON patch.`;
   log("INFO", "Applying patch:");
   const merged = applyWalkthroughPatch(previousWalkthrough, patch);
 
-  // Mermaid sanitize + verify tips (same as full path)
+  // Mermaid sanitize + defer tip verification to the background resolver
   sanitizeWalkthroughDiagrams(merged);
   if (merged.review_tips?.length) {
-    const { diff: focusedDiff } = buildFocusedDiff(prData.diff);
-    merged.review_tips = await verifyReviewTips(merged.review_tips, focusedDiff, client);
-    for (const t of merged.review_tips) {
-      if (typeof t === "object" && t.status === "info") t.pending = true;
-    }
+    merged.review_tips = merged.review_tips.map((t) =>
+      typeof t === "string" ? { tip: t, pending: true } : { ...t, pending: true }
+    );
   }
 
   return merged;
@@ -1371,66 +1368,27 @@ async function main() {
   console.log(`Slug: ${slug}`);
   console.log(`Open: http://localhost:5200/?pr=${slug}`);
 
-  // Launch the background resolver for any pending info tips. It will keep
-  // running after we exit, updating the JSON as each tip is resolved — the
-  // viewer polls and re-renders. Only spawn if there are tips to resolve.
+  // Launch the background resolver: it verifies every pending tip against
+  // the diff, then investigates the unresolved ones in the actual codebase.
+  // It keeps running after we exit, updating the JSON as tips resolve — the
+  // viewer polls and re-renders.
   const pendingCount = (walkthrough.review_tips || []).filter(
     (t) => typeof t === "object" && t.pending
   ).length;
   if (pendingCount > 0 && (process.env.ANTHROPIC_API_KEY || loadEnvKey())) {
     // Use the user's original cwd (where `review` was invoked). bin/review cd's
     // into REVIEW_TOOL_DIR before spawning us but preserves the original here.
-    let repoPath = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
-
-    // For URL-based reviews the investigator needs the PR's actual codebase.
-    // If the cwd isn't a clone of that repo, shallow-clone it at the PR head
-    // into a cache (reused across runs) so tips always get investigated
-    // against the real code. For --local and --diff modes, trust the cwd.
-    let canResolve = true;
-    let skipReason = null;
-    if (prData.source === "github" && prData.owner && prData.repo) {
-      let cwdMatches = false;
-      try {
-        const remote = execSync("git config --get remote.origin.url", {
-          encoding: "utf-8",
-          cwd: repoPath,
-          stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
-        cwdMatches = remote.includes(`${prData.owner}/${prData.repo}`);
-      } catch {}
-      if (!cwdMatches) {
-        try {
-          repoPath = ensureRepoClone(prData.owner, prData.repo, prData.number);
-        } catch (err) {
-          canResolve = false;
-          skipReason = `could not clone ${prData.owner}/${prData.repo}: ${err.message}`;
-        }
-      }
-    }
-
-    if (canResolve) {
-      const resolverPath = resolve(__dirname, "resolve-info-tips.js");
-      const resolverLog = openSync(resolve(__dirname, "..", "logs", `resolver-${slug}.out`), "a");
-      const child = spawn(process.execPath, [resolverPath, slug, repoPath], {
-        detached: true,
-        stdio: ["ignore", resolverLog, resolverLog],
-        env: process.env,
-      });
-      child.unref();
-      console.log(`\n⟳ Resolving ${pendingCount} info tip${pendingCount === 1 ? "" : "s"} in the background (pid ${child.pid})`);
-      console.log(`  Investigating repo at: ${repoPath}`);
-      console.log(`  The viewer will update automatically as results arrive.`);
-    } else {
-      // Clear the pending flags so the viewer doesn't spin forever.
-      const walkthroughContent = JSON.parse(readFileSync(perPrPath, "utf-8"));
-      for (const t of walkthroughContent.walkthrough.review_tips || []) {
-        if (t.pending) delete t.pending;
-      }
-      writeFileSync(perPrPath, JSON.stringify(walkthroughContent, null, 2));
-      writeFileSync(defaultPath, JSON.stringify(walkthroughContent, null, 2));
-      console.log(`\nℹ Skipping background info-tip resolution: ${skipReason}.`);
-      console.log(`  Check network/gh auth, or re-run from a local clone of the PR's repo.`);
-    }
+    const repoPath = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
+    const resolverPath = resolve(__dirname, "resolve-info-tips.js");
+    const resolverLog = openSync(resolve(__dirname, "..", "logs", `resolver-${slug}.out`), "a");
+    const child = spawn(process.execPath, [resolverPath, slug, repoPath], {
+      detached: true,
+      stdio: ["ignore", resolverLog, resolverLog],
+      env: process.env,
+    });
+    child.unref();
+    console.log(`\n⟳ Verifying ${pendingCount} review tip${pendingCount === 1 ? "" : "s"} in the background (pid ${child.pid})`);
+    console.log(`  The viewer will update automatically as results arrive.`);
   }
 }
 

@@ -1,9 +1,19 @@
 /**
- * Resolve "info"-status review tips by investigating the codebase with tool use.
+ * Verify and resolve review tips in the background.
  *
- * Intended to run as a detached background process after generate.js writes the
- * walkthrough JSON. As each tip resolves, the JSON is rewritten in place so the
- * viewer's polling loop picks up the update.
+ * Runs as a detached process after generate.js writes the walkthrough JSON
+ * (with every tip marked pending), so the viewer opens immediately:
+ *
+ *   Stage 1 — verify all pending tips against the diff in one batch call.
+ *             Tips that resolve as verified/concern are finalized.
+ *   Stage 2 — tips the diff alone couldn't settle are investigated in the
+ *             actual codebase with tool use (grep/read_file/list_files).
+ *             For GitHub PRs, if the invoking directory isn't a clone of the
+ *             PR's repo, a shallow clone at the PR head is created/reused
+ *             under .cache/repos/.
+ *
+ * As each tip resolves, the JSON is rewritten in place so the viewer's
+ * polling loop picks up the update.
  *
  * Usage: node src/resolve-info-tips.js <slug> [repo-path]
  */
@@ -45,6 +55,12 @@ const MAX_TOOL_ROUNDS = 50;
 const MAX_CONCURRENCY = 3;
 const MAX_GREP_LINES = 120;
 const MAX_READ_LINES = 400;
+// Generous because thinking tokens count toward max_tokens on Opus 5.
+const MAX_TOKENS_PER_ROUND = 8000;
+
+function extractText(response) {
+  return response.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+}
 
 const TOOLS = [
   {
@@ -167,16 +183,129 @@ function executeTool(toolName, input, repoPath) {
   }
 }
 
+// Ensure a local checkout of the PR's repo at the PR head. Shallow-clones into
+// .cache/repos/ on first use, then just fetches pull/<N>/head (which also
+// works for PRs from forks) on later runs.
+function ensureRepoClone(owner, repo, number) {
+  const cacheDir = resolve(__dirname, "..", ".cache", "repos");
+  mkdirSync(cacheDir, { recursive: true });
+  const dir = resolve(cacheDir, `${owner}-${repo}`);
+  const opts = { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 50 * 1024 * 1024 };
+  if (!existsSync(resolve(dir, ".git"))) {
+    log("INFO", `Shallow-cloning ${owner}/${repo} for tip investigation...`);
+    execFileSync("gh", ["repo", "clone", `${owner}/${repo}`, dir, "--", "--depth", "1", "--no-checkout", "--quiet"], opts);
+  }
+  execFileSync("git", ["fetch", "--depth", "1", "--quiet", "origin", `pull/${number}/head`], { ...opts, cwd: dir });
+  execFileSync("git", ["checkout", "--detach", "--force", "--quiet", "FETCH_HEAD"], { ...opts, cwd: dir });
+  return dir;
+}
+
+// Manage prompt-cache breakpoints for the tool loop. Each round re-sends the
+// whole conversation; without caching that costs O(rounds²) input tokens.
+// Breakpoints: the shared instructions+diff block (identical across all tip
+// investigations, so concurrent tips hit each other's cache) plus the two most
+// recent user messages (so each round reads the prior rounds from cache).
+function setCacheBreakpoints(messages) {
+  const userIdxs = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (Array.isArray(m.content)) for (const b of m.content) delete b.cache_control;
+    if (m.role === "user") userIdxs.push(i);
+  }
+  const first = messages[0];
+  if (Array.isArray(first.content)) first.content[0].cache_control = { type: "ephemeral" };
+  for (const i of userIdxs.slice(-2)) {
+    const m = messages[i];
+    if (Array.isArray(m.content) && m.content.length) {
+      m.content[m.content.length - 1].cache_control = { type: "ephemeral" };
+    }
+  }
+}
+
+// --- Stage 1: batch verification against the diff (no repo access needed) ---
+
+async function verifyTipsAgainstDiff(client, tips, diff) {
+  log("INFO", `Verifying ${tips.length} review tips against the diff...`);
+
+  const prompt = `You are a code reviewer verifying specific review concerns against the actual diff.
+
+For EACH tip below, examine the diff and determine:
+- "verified": You checked and the code looks correct — the concern is addressed or not an issue.
+- "concern": You checked and there IS a real issue, risk, or the concern is valid.
+- "info": Cannot be fully determined from the diff alone (e.g. requires runtime testing, checking files not in the diff, or external context).
+
+Be precise and cite specific evidence from the diff. If a tip mentions a file/line, look at that exact location.
+
+Return ONLY a JSON array (no wrapping object, no markdown fences):
+[
+  {
+    "tip": "the original tip text, verbatim",
+    "status": "verified|concern|info",
+    "finding": "1-2 sentences: what you found, with file:line references to evidence"
+  }
+]
+
+## Tips to Verify
+${tips.map((t, i) => `${i + 1}. ${t.tip}`).join("\n")}
+
+## Diff
+\`\`\`diff
+${diff.slice(0, 400000)}${diff.length > 400000 ? "\n... (diff truncated — treat tips about unseen files as \"info\")" : ""}
+\`\`\``;
+
+  try {
+    const stream = client.messages.stream({
+      model: GENERATION_MODEL,
+      max_tokens: 8192,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const response = await stream.finalMessage();
+    const text = extractText(response);
+    log("INFO", `Tip verification: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+
+    // Thinking models can emit several fenced blocks — take the largest
+    // candidate that parses into a verdict array, not the first fence.
+    const fenceRe = /```(?:json)?\s*([\s\S]*?)```/g;
+    const candidates = [];
+    let m;
+    while ((m = fenceRe.exec(text))) {
+      if (m[1].trim()) candidates.push(m[1].trim());
+    }
+    candidates.push(text.trim());
+    candidates.sort((a, b) => b.length - a.length);
+    let verified = [];
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        const arr = Array.isArray(parsed) ? parsed : parsed.verified_tips || parsed.tips || [];
+        if (arr.length > 0) {
+          verified = arr;
+          break;
+        }
+      } catch {}
+    }
+    if (verified.length !== tips.length) {
+      log("WARN", `Verification returned ${verified.length} tips but expected ${tips.length}`);
+    }
+    return verified.length > 0 ? verified : null;
+  } catch (err) {
+    log("WARN", `Tip verification failed (${err.message}) — sending all tips to investigation`);
+    return null;
+  }
+}
+
+// --- Stage 2: tool-use investigation of tips the diff couldn't settle ---
+
 async function resolveTip(client, tip, repoPath, diffContext) {
+  const tipText = typeof tip === "string" ? tip : tip.tip;
   const messages = [
     {
       role: "user",
-      content: `You are verifying a code review concern that couldn't be fully determined from the diff alone. Use the tools to investigate the actual codebase and produce a final verdict.
+      content: [
+        {
+          type: "text",
+          text: `You are verifying a code review concern that couldn't be fully determined from the diff alone. Use the tools to investigate the actual codebase and produce a final verdict.
 
-## The concern
-${typeof tip === "string" ? tip : tip.tip}
-
-${tip.finding ? `## What we've established so far\n${tip.finding}\n` : ""}
 ## Diff being reviewed (for context)
 \`\`\`diff
 ${diffContext.slice(0, 8000)}${diffContext.length > 8000 ? "\n... (truncated)" : ""}
@@ -195,11 +324,19 @@ Status meanings:
 - info: even with tool access, this genuinely requires runtime testing / external context
 
 Do NOT produce the final JSON until you've actually looked at the code. Don't guess.`,
+        },
+        {
+          type: "text",
+          text: `## The concern\n${tipText}\n${tip.finding ? `\n## What we've established so far\n${tip.finding}\n` : ""}`,
+        },
+      ],
     },
   ];
 
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // On the final round, drop the tools and tell the model to commit. This
@@ -213,43 +350,48 @@ Do NOT produce the final JSON until you've actually looked at the code. Don't gu
           "You've used your full investigation budget. Stop searching and produce your final verdict now as the JSON block, based on everything you've found so far. If you're still uncertain, say so in the finding and use status \"info\".",
       });
     }
+    setCacheBreakpoints(messages);
     const response = await client.messages.create({
       model: GENERATION_MODEL,
-      max_tokens: 2048,
+      max_tokens: MAX_TOKENS_PER_ROUND,
       tools: lastRound ? undefined : TOOLS,
       messages,
     });
     inputTokens += response.usage?.input_tokens || 0;
     outputTokens += response.usage?.output_tokens || 0;
+    cacheRead += response.usage?.cache_read_input_tokens || 0;
+    cacheWrite += response.usage?.cache_creation_input_tokens || 0;
 
     messages.push({ role: "assistant", content: response.content });
 
     if (response.stop_reason === "end_turn") {
-      const text = response.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
-      const match = text.match(/```json\s*([\s\S]*?)```/);
-      if (match) {
+      const text = extractText(response);
+      // The final verdict is the LAST fenced block — earlier fences may be
+      // the echoed format example or an interim sketch.
+      const fences = [...text.matchAll(/```json\s*([\s\S]*?)```/g)].reverse();
+      for (const fence of fences) {
         try {
-          const parsed = JSON.parse(match[1]);
+          const parsed = JSON.parse(fence[1]);
           if (parsed.status && parsed.finding) {
             return {
-              tip: typeof tip === "string" ? tip : tip.tip,
+              tip: tipText,
               status: parsed.status,
               finding: parsed.finding,
               pending: false,
               resolved: true,
-              usage: { input: inputTokens, output: outputTokens, rounds: round + 1 },
+              usage: { input: inputTokens, output: outputTokens, cacheRead, cacheWrite, rounds: round + 1 },
             };
           }
         } catch {}
       }
       // No valid JSON — degrade
       return {
-        tip: typeof tip === "string" ? tip : tip.tip,
+        tip: tipText,
         status: "info",
         finding: text.slice(0, 400) || "No final verdict from investigation.",
         pending: false,
         resolved: true,
-        usage: { input: inputTokens, output: outputTokens, rounds: round + 1 },
+        usage: { input: inputTokens, output: outputTokens, cacheRead, cacheWrite, rounds: round + 1 },
       };
     }
 
@@ -264,12 +406,12 @@ Do NOT produce the final JSON until you've actually looked at the code. Don't gu
   }
 
   return {
-    tip: typeof tip === "string" ? tip : tip.tip,
+    tip: tipText,
     status: "info",
     finding: "Investigation exceeded tool round limit without reaching a verdict.",
     pending: false,
     resolved: true,
-    usage: { input: inputTokens, output: outputTokens, rounds: MAX_TOOL_ROUNDS },
+    usage: { input: inputTokens, output: outputTokens, cacheRead, cacheWrite, rounds: MAX_TOOL_ROUNDS },
   };
 }
 
@@ -289,9 +431,27 @@ function updateTipInFile(jsonPath, original, resolved) {
   });
   if (idx === -1) return false;
   tips[idx] = { ...tips[idx], ...resolved };
-  delete tips[idx].pending;
+  if (!resolved.pending) delete tips[idx].pending;
   writeFileSync(jsonPath, JSON.stringify(content, null, 2));
   return true;
+}
+
+// Update the per-PR JSON and mirror to the default walkthrough-data.json when
+// it holds the same walkthrough.
+function applyTipUpdate(jsonPath, content, tip, resolved) {
+  const wrote = updateTipInFile(jsonPath, tip, resolved);
+  if (wrote) {
+    const defaultPath = resolve(__dirname, "..", "public", "walkthrough-data.json");
+    if (existsSync(defaultPath)) {
+      try {
+        const def = JSON.parse(readFileSync(defaultPath, "utf-8"));
+        if (def?.meta && content?.meta && def.meta.headSha === content.meta.headSha) {
+          updateTipInFile(defaultPath, tip, resolved);
+        }
+      } catch {}
+    }
+  }
+  return wrote;
 }
 
 async function runPool(items, worker, concurrency) {
@@ -316,7 +476,7 @@ async function main() {
     process.exit(1);
   }
   const slug = args[0];
-  const repoPath = args[1] ? resolve(args[1]) : process.cwd();
+  const cwdRepoPath = args[1] ? resolve(args[1]) : process.cwd();
 
   const jsonPath = resolve(__dirname, "..", "public", "walkthroughs", `${slug}.json`);
   if (!existsSync(jsonPath)) {
@@ -333,46 +493,101 @@ async function main() {
   const content = JSON.parse(readFileSync(jsonPath, "utf-8"));
   const tips = content?.walkthrough?.review_tips || [];
   const diff = content?.diff || "";
+  const meta = content?.meta || {};
 
   const pendingTips = tips.filter((t) => typeof t === "object" && t.pending);
   if (pendingTips.length === 0) {
-    log("INFO", "No pending info tips to resolve");
+    log("INFO", "No pending tips to process");
     return;
   }
 
-  log("INFO", `Resolving ${pendingTips.length} pending info tips for ${slug} (repo: ${repoPath})`);
-
   const client = new Anthropic({ apiKey, timeout: 5 * 60 * 1000, maxRetries: 2 });
 
-  let totalIn = 0, totalOut = 0, totalRounds = 0;
+  // Stage 1: verify everything against the diff in one batch call. Tips that
+  // the diff alone settles are finalized; the rest stay pending with the
+  // partial finding attached, and go to tool investigation.
+  const verdicts = await verifyTipsAgainstDiff(client, pendingTips, diff);
+  const remaining = [];
+  for (let i = 0; i < pendingTips.length; i++) {
+    const tip = pendingTips[i];
+    const v =
+      (verdicts || []).find((x) => x.tip === tip.tip) ||
+      (verdicts && verdicts.length === pendingTips.length ? verdicts[i] : null);
+    if (v && (v.status === "verified" || v.status === "concern")) {
+      applyTipUpdate(jsonPath, content, tip, {
+        status: v.status,
+        finding: v.finding,
+        resolved: true,
+        pending: false,
+      });
+    } else {
+      const enriched = { ...tip, status: "info", finding: v?.finding || tip.finding };
+      applyTipUpdate(jsonPath, content, tip, {
+        status: "info",
+        finding: enriched.finding,
+        pending: true,
+      });
+      remaining.push(enriched);
+    }
+  }
+  log("INFO", `Verification: ${pendingTips.length - remaining.length}/${pendingTips.length} settled from the diff, ${remaining.length} need investigation`);
+
+  if (remaining.length === 0) return;
+
+  // Stage 2: pick the repo to investigate. For GitHub PRs prefer the invoking
+  // directory if it's a clone of the PR's repo; otherwise use a cached shallow
+  // clone at the PR head. --local/--diff reviews always use the invoking dir.
+  let repoPath = cwdRepoPath;
+  if (meta.owner && meta.repo && meta.number) {
+    let cwdMatches = false;
+    try {
+      const remote = execFileSync("git", ["config", "--get", "remote.origin.url"], {
+        cwd: cwdRepoPath,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      cwdMatches = remote.includes(`${meta.owner}/${meta.repo}`);
+    } catch {}
+    if (!cwdMatches) {
+      try {
+        repoPath = ensureRepoClone(meta.owner, meta.repo, meta.number);
+      } catch (err) {
+        log("WARN", `Could not clone ${meta.owner}/${meta.repo}: ${err.message} — leaving remaining tips unresolved`);
+        for (const tip of remaining) {
+          applyTipUpdate(jsonPath, content, tip, {
+            status: "info",
+            finding: tip.finding || "Could not be verified from the diff; codebase unavailable for investigation.",
+            resolved: true,
+            pending: false,
+          });
+        }
+        return;
+      }
+    }
+  }
+
+  log("INFO", `Investigating ${remaining.length} tips for ${slug} (repo: ${repoPath})`);
+
+  let totalIn = 0, totalOut = 0, totalCacheRead = 0, totalRounds = 0;
   let resolvedCount = 0;
 
-  await runPool(pendingTips, async (tip, i) => {
-    log("INFO", `[${i + 1}/${pendingTips.length}] Resolving: ${tip.tip.slice(0, 80)}...`);
+  await runPool(remaining, async (tip, i) => {
+    log("INFO", `[${i + 1}/${remaining.length}] Resolving: ${tip.tip.slice(0, 80)}...`);
     const resolved = await resolveTip(client, tip, repoPath, diff);
-    const wrote = updateTipInFile(jsonPath, tip, resolved);
+    const wrote = applyTipUpdate(jsonPath, content, tip, resolved);
     if (wrote) {
       resolvedCount++;
-      // Also update the default walkthrough-data.json if it matches this slug
-      const defaultPath = resolve(__dirname, "..", "public", "walkthrough-data.json");
-      if (existsSync(defaultPath)) {
-        try {
-          const def = JSON.parse(readFileSync(defaultPath, "utf-8"));
-          if (def?.meta && content?.meta && def.meta.headSha === content.meta.headSha) {
-            updateTipInFile(defaultPath, tip, resolved);
-          }
-        } catch {}
-      }
-      log("INFO", `[${i + 1}/${pendingTips.length}] Resolved → ${resolved.status} (${resolved.usage.rounds} rounds, ${resolved.usage.input}/${resolved.usage.output} tokens)`);
+      log("INFO", `[${i + 1}/${remaining.length}] Resolved → ${resolved.status} (${resolved.usage.rounds} rounds, ${resolved.usage.input} uncached + ${resolved.usage.cacheRead} cached in / ${resolved.usage.output} out)`);
     } else {
-      log("WARN", `[${i + 1}/${pendingTips.length}] Could not find tip in JSON to update`);
+      log("WARN", `[${i + 1}/${remaining.length}] Could not find tip in JSON to update`);
     }
     totalIn += resolved.usage.input;
     totalOut += resolved.usage.output;
+    totalCacheRead += resolved.usage.cacheRead;
     totalRounds += resolved.usage.rounds;
   }, MAX_CONCURRENCY);
 
-  log("INFO", `Done. Resolved ${resolvedCount}/${pendingTips.length}. Total: ${totalRounds} tool rounds, ${totalIn} input / ${totalOut} output tokens.`);
+  log("INFO", `Done. Resolved ${resolvedCount}/${remaining.length}. Total: ${totalRounds} tool rounds, ${totalIn} uncached + ${totalCacheRead} cached input / ${totalOut} output tokens.`);
 }
 
 main().catch((err) => {
