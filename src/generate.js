@@ -87,6 +87,15 @@ function tryRepairJSON(text) {
   return null;
 }
 
+// Concatenate all text blocks. Models with extended thinking (e.g. Opus 5)
+// may return a thinking block first, so content[0] is not necessarily text.
+function extractText(response) {
+  return response.content
+    .filter((c) => c.type === "text")
+    .map((c) => c.text)
+    .join("\n");
+}
+
 async function repairJSONWithClaude(text, client) {
   log("INFO", "Local repair failed — asking Claude to fix the JSON...");
   try {
@@ -99,7 +108,7 @@ async function repairJSONWithClaude(text, client) {
     });
     const response = await stream.finalMessage();
     log("INFO", `Repair response: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-    const fixed = response.content[0].text;
+    const fixed = extractText(response);
     const jsonMatch = fixed.match(/```json\s*([\s\S]*?)```/) || [null, fixed];
     return JSON.parse(jsonMatch[1].trim());
   } catch (err) {
@@ -787,7 +796,7 @@ ${diff}
     });
 
     const response = await stream.finalMessage();
-    const text = response.content[0].text;
+    const text = extractText(response);
     log("INFO", `Tip verification: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
 
     // Parse JSON — may be wrapped in ```json fences
@@ -931,7 +940,7 @@ Generate the walkthrough JSON. Important reminders:
   }
 
   log("INFO", `API response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-  const text = response.content[0].text;
+  const text = extractText(response);
 
   // Extract JSON from the response (it might be wrapped in ```json blocks)
   const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || [null, text];
@@ -1193,7 +1202,7 @@ Return ONLY the JSON patch.`;
   }
 
   log("INFO", `Patch response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-  const text = response.content[0].text;
+  const text = extractText(response);
 
   // Parse patch JSON with the same resilience as the full path
   const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || [null, text];
