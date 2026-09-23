@@ -2,7 +2,7 @@
 
 // Walkthrough generation, incremental patches, tip verification,
 // background tip investigation, and section chat.
-export const GENERATION_MODEL = process.env.REVIEW_MODEL || "claude-opus-5";
+export const GENERATION_MODEL = process.env.REVIEW_MODEL || "claude-opus-5-5";
 
 // Codex uses the model configured by the CLI unless explicitly overridden.
 export const CODEX_MODEL = process.env.REVIEW_CODEX_MODEL || null;

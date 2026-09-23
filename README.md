@@ -202,7 +202,7 @@ The slug is printed at the end of generation (`Slug: owner-repo-123`). You can a
 | `REVIEW_CODEX_MODEL` | Codex model override; otherwise uses Codex CLI config | — |
 | `ANTHROPIC_API_KEY` | Anthropic API key (required with `--claude`) | — |
 | `REVIEW_PORT` | Dev server port | `5200` |
-| `REVIEW_MODEL` | Claude model for generation, tip investigation, and chat (e.g. `claude-sonnet-5` for cheaper runs) | `claude-opus-5` |
+| `REVIEW_MODEL` | Claude model for generation, tip investigation, and chat (e.g. `claude-sonnet-5` for cheaper runs) | `claude-opus-5-5` |
 
 For Claude, copy `.env.example` to `.env` and add your key, or set it as an environment variable.
 
