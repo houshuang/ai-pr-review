@@ -18,16 +18,18 @@ This tool bridges them. It uses Claude to analyze the full PR — diffs, commit 
 git clone https://github.com/houshuang/ai-pr-review.git
 cd ai-pr-review
 pnpm install
+cp .env.example .env   # then put your Anthropic API key in .env
 
-# Review any GitHub PR
+# Review any GitHub PR you can read with `gh`
 ./bin/review https://github.com/owner/repo/pull/123
 ```
 
-This fetches the PR, generates a walkthrough with Claude, and opens it in your browser.
+This fetches the PR, generates a walkthrough with Claude, starts a local viewer on http://localhost:5200 and opens it in your browser. Generation takes a few minutes (about four for a 300-line PR with the default model); later runs on the same commit reuse the cached walkthrough.
 
 ### Requirements
 
-- Node.js 20+, pnpm
+- macOS or Linux (the CLI is a bash script)
+- Node.js 20+, pnpm (10 or 11)
 - [GitHub CLI](https://cli.github.com/) (`gh auth login`)
 - Anthropic API key (`export ANTHROPIC_API_KEY=sk-ant-...` or add to `.env`)
 
@@ -72,7 +74,7 @@ This fetches the PR, generates a walkthrough with Claude, and opens it in your b
 
 **Viewer** (Preact SPA) — Renders the walkthrough as an interactive review UI. Diffs are syntax-highlighted and filtered to show only the relevant hunks per section. The Vite dev server proxies GitHub API calls through `gh`, so posting comments and submitting reviews works without managing tokens.
 
-**AI Chat** — Each section has a chat assistant (powered by Claude Code CLI) that can answer questions about the code changes. It has read access to the actual codebase, so it can look up context, check git history, and give informed answers.
+**AI Chat** — Each section has a chat assistant that answers questions about the code changes. The dev server calls the Anthropic API with the section's narrative, annotations and callouts as context; it does not read the rest of the codebase (the background tip investigation below does).
 
 ## Features
 
@@ -154,12 +156,24 @@ Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions abo
 ./bin/review --diff path/to/changes.patch
 ```
 
+### Open the viewer without generating
+
+```bash
+# Starts the viewer on the walkthroughs already in public/walkthroughs/
+./bin/review
+```
+
 ### Export static HTML
 
 ```bash
 # Export a previously generated walkthrough as a self-contained HTML file
 ./bin/review --export owner-repo-123
+
+# Choose the output path and diff mode
+./bin/review --export owner-repo-123 --output review.html --mode unified
 ```
+
+The slug is printed at the end of generation (`Slug: owner-repo-123`). You can also press `p` in the viewer to export.
 
 ## Configuration
 
@@ -167,9 +181,11 @@ Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions abo
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (required) | — |
 | `REVIEW_PORT` | Dev server port | `5200` |
-| `REVIEW_MODEL` | Claude model for generation, tip investigation, and chat | `claude-opus-5` |
+| `REVIEW_MODEL` | Claude model for generation, tip investigation, and chat (e.g. `claude-sonnet-5` for cheaper runs) | `claude-opus-5` |
 
 Copy `.env.example` to `.env` and add your key, or set it as an environment variable.
+
+Every run calls the Anthropic API on your key: one generation call, then a background pass that verifies the review tips. Walkthroughs, the repo clones used for tip investigation (`.cache/`) and logs (`logs/`) stay on your machine.
 
 ## Project structure
 
