@@ -24,8 +24,10 @@ import { execFileSync } from "child_process";
 import { resolve, dirname, relative, join } from "path";
 import { fileURLToPath } from "url";
 import { GENERATION_MODEL } from "./models.js";
+import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const AI_PROVIDER = resolveAIProvider();
 
 const LOG_DIR = resolve(__dirname, "..", "logs");
 mkdirSync(LOG_DIR, { recursive: true });
@@ -53,6 +55,10 @@ function loadEnvKey() {
 
 const MAX_TOOL_ROUNDS = 50;
 const MAX_CONCURRENCY = 3;
+// A Codex failure that is about setup (old CLI, unusable model, not logged in)
+// will hit every remaining tip identically. Latch it on the first occurrence so
+// the pool degrades the rest immediately instead of spawning N doomed children.
+let codexSetupFailure = null;
 const MAX_GREP_LINES = 120;
 const MAX_READ_LINES = 400;
 // Generous because thinking tokens count toward max_tokens on Opus 5.
@@ -254,14 +260,25 @@ ${diff.slice(0, 400000)}${diff.length > 400000 ? "\n... (diff truncated — trea
 \`\`\``;
 
   try {
-    const stream = client.messages.stream({
-      model: GENERATION_MODEL,
-      max_tokens: 8192,
-      messages: [{ role: "user", content: prompt }],
-    });
-    const response = await stream.finalMessage();
-    const text = extractText(response);
-    log("INFO", `Tip verification: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+    let text;
+    if (AI_PROVIDER === "codex") {
+      let usage = null;
+      text = await runCodex({
+        userPrompt: prompt,
+        cwd: process.env.REVIEW_ORIGINAL_CWD || process.cwd(),
+        onUsage: (u) => { usage = u; },
+      });
+      log("INFO", `Codex tip verification: ${formatCodexUsage(usage)}`);
+    } else {
+      const stream = client.messages.stream({
+        model: GENERATION_MODEL,
+        max_tokens: 8192,
+        messages: [{ role: "user", content: prompt }],
+      });
+      const response = await stream.finalMessage();
+      text = extractText(response);
+      log("INFO", `Tip verification: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+    }
 
     // Thinking models can emit several fenced blocks — take the largest
     // candidate that parses into a verdict array, not the first fence.
@@ -289,6 +306,7 @@ ${diff.slice(0, 400000)}${diff.length > 400000 ? "\n... (diff truncated — trea
     }
     return verified.length > 0 ? verified : null;
   } catch (err) {
+    if (err.codexSetupFailure) codexSetupFailure = err.message;
     log("WARN", `Tip verification failed (${err.message}) — sending all tips to investigation`);
     return null;
   }
@@ -296,8 +314,94 @@ ${diff.slice(0, 400000)}${diff.length > 400000 ? "\n... (diff truncated — trea
 
 // --- Stage 2: tool-use investigation of tips the diff couldn't settle ---
 
+// The investigator being unavailable is not a verdict about the code. Keep
+// whatever the diff-only pass established and say plainly that the deeper look
+// did not happen, rather than passing a tool failure off as a finding.
+function investigationUnavailable(tipText, priorFinding, reason) {
+  const note = `Deeper investigation was skipped — ${reason}`;
+  return {
+    tip: tipText,
+    status: "info",
+    finding: priorFinding ? `${priorFinding}\n\n_${note}_` : note,
+    pending: false,
+    resolved: true,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, rounds: 0 },
+  };
+}
+
 async function resolveTip(client, tip, repoPath, diffContext) {
   const tipText = typeof tip === "string" ? tip : tip.tip;
+  if (AI_PROVIDER === "codex") {
+    if (codexSetupFailure) {
+      return investigationUnavailable(tipText, tip.finding, codexSetupFailure);
+    }
+    const prompt = `You are verifying a code review concern that couldn't be fully determined from the diff alone. Investigate the actual codebase before deciding.
+
+## Diff being reviewed (for context)
+\`\`\`diff
+${diffContext.slice(0, 8000)}${diffContext.length > 8000 ? "\n... (truncated)" : ""}
+\`\`\`
+
+## The concern
+${tipText}
+${tip.finding ? `\n## What the diff-only check established\n${tip.finding}\n` : ""}
+
+Search and read the relevant files. Return ONLY this JSON object, with specific file:line evidence in the finding:
+{ "status": "verified|concern|info", "finding": "1-3 sentences" }
+
+Status meanings:
+- verified: the concern is addressed or not an issue
+- concern: there is a real issue
+- info: it genuinely requires runtime testing or external context`;
+
+    try {
+      let codexUsage = null;
+      const text = await runCodex({
+        userPrompt: prompt,
+        cwd: repoPath,
+        onUsage: (u) => { codexUsage = u; },
+      });
+      const usage = {
+        input: (codexUsage?.input || 0) - (codexUsage?.cachedInput || 0),
+        output: codexUsage?.output || 0,
+        cacheRead: codexUsage?.cachedInput || 0,
+        cacheWrite: 0,
+        rounds: 1,
+      };
+      const candidates = [
+        ...[...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((match) => match[1].trim()).reverse(),
+        text.trim(),
+      ];
+      for (const candidate of candidates) {
+        try {
+          const parsed = JSON.parse(candidate);
+          if (parsed.status && parsed.finding) {
+            return {
+              tip: tipText,
+              status: parsed.status,
+              finding: parsed.finding,
+              pending: false,
+              resolved: true,
+              usage,
+            };
+          }
+        } catch {}
+      }
+      return {
+        tip: tipText,
+        status: "info",
+        finding: text.slice(0, 400) || "Codex did not return a final verdict.",
+        pending: false,
+        resolved: true,
+        usage,
+      };
+    } catch (err) {
+      if (err.codexSetupFailure) codexSetupFailure = err.message;
+      log("WARN", `Codex investigation failed for "${tipText.slice(0, 60)}": ${err.message}`);
+      return investigationUnavailable(tipText, tip.finding, err.message);
+    }
+  }
+
   const messages = [
     {
       role: "user",
@@ -484,9 +588,9 @@ async function main() {
     process.exit(1);
   }
 
-  const apiKey = loadEnvKey();
-  if (!apiKey) {
-    log("ERROR", "No ANTHROPIC_API_KEY found — cannot resolve info tips");
+  const apiKey = AI_PROVIDER === "claude" ? loadEnvKey() : null;
+  if (AI_PROVIDER === "claude" && !apiKey) {
+    log("ERROR", "No ANTHROPIC_API_KEY found — cannot resolve info tips with Claude");
     process.exit(1);
   }
 
@@ -501,7 +605,9 @@ async function main() {
     return;
   }
 
-  const client = new Anthropic({ apiKey, timeout: 5 * 60 * 1000, maxRetries: 2 });
+  const client = AI_PROVIDER === "claude"
+    ? new Anthropic({ apiKey, timeout: 5 * 60 * 1000, maxRetries: 2 })
+    : null;
 
   // Stage 1: verify everything against the diff in one batch call. Tips that
   // the diff alone settles are finalized; the rest stay pending with the

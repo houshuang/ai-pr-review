@@ -22,22 +22,70 @@ log() {
 usage() {
   echo "Usage: review <github-pr-url>"
   echo "       review https://github.com/owner/repo/pull/123"
+  echo "       review <branch-name>          (looks the branch up in recently reviewed repos)"
   echo "       review --local [base-branch]"
   echo "       review --diff path/to/diff.patch"
   echo "       review --export <slug> [--output path.html] [--mode side-by-side|unified]"
   echo ""
+  echo "       review --set-default claude|codex"
+  echo ""
   echo "Flags:"
+  echo "  --claude            Use Claude for this run"
+  echo "  --codex             Use Codex for this run"
+  echo "  --set-default X     Save claude or codex as the default provider"
   echo "  --force             Skip the cached walkthrough and regenerate from scratch"
   echo ""
+  echo "The first run asks which provider to use by default and saves the answer to"
+  echo "  \${XDG_CONFIG_HOME:-~/.config}/ai-pr-review/config.json"
+  echo ""
   echo "Environment:"
-  echo "  ANTHROPIC_API_KEY   Required. Your Anthropic API key."
+  echo "  ANTHROPIC_API_KEY   Needed for Claude (or put it in .env)"
+  echo "  REVIEW_AI_PROVIDER  claude or codex; overrides the saved default"
+  echo "  REVIEW_CODEX_MODEL  Optional Codex model override (default: Codex CLI config)"
+  echo "  REVIEW_MODEL        Optional Claude model override (default: claude-opus-5-5)"
   echo "  REVIEW_PORT         Dev server port (default: 5200)"
   echo ""
   echo "Logs are written to: $LOG_DIR/"
 }
 
+# Provider options may appear anywhere in the command. Consume them here so the
+# generator sees the same positional arguments as before.
+PROVIDER_ARGS=()
+SETS_DEFAULT=""
+REVIEW_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --claude|--codex) PROVIDER_ARGS+=("$1") ;;
+    --set-default=*) PROVIDER_ARGS+=("$1"); SETS_DEFAULT=1 ;;
+    --set-default)
+      if [ $# -lt 2 ]; then
+        echo "--set-default needs a value: claude or codex" >&2
+        exit 1
+      fi
+      PROVIDER_ARGS+=("$1" "$2")
+      SETS_DEFAULT=1
+      shift
+      ;;
+    *) REVIEW_ARGS+=("$1") ;;
+  esac
+  shift
+done
+set -- ${REVIEW_ARGS[@]+"${REVIEW_ARGS[@]}"}
+
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
   usage
+  exit 0
+fi
+
+# Prints the provider on stdout; the prompt (first run only) and the one-line
+# explanation go to the terminal on stderr.
+choose_provider() {
+  AI_PROVIDER="$(node "$REVIEW_TOOL_DIR/src/provider-config.js" ${PROVIDER_ARGS[@]+"${PROVIDER_ARGS[@]}"})" || exit 1
+}
+
+if [ -z "$1" ] && [ -n "$SETS_DEFAULT" ]; then
+  # `review --set-default X` on its own just saves the default.
+  choose_provider
   exit 0
 fi
 
@@ -74,13 +122,14 @@ if [ "$1" = "--export" ]; then
   exit $?
 fi
 
+choose_provider
 log "$(date '+%Y-%m-%d %H:%M:%S') - review $*"
-log "Generating walkthrough..."
+log "Generating walkthrough with ${AI_PROVIDER}..."
 
 # Run the generator, capturing output and exit code separately
 # Pass original CWD so git fallback can find the local repo
 set +e
-output=$(REVIEW_ORIGINAL_CWD="$ORIGINAL_CWD" node src/generate.js "$@" 2>&1)
+output=$(REVIEW_AI_PROVIDER="$AI_PROVIDER" REVIEW_ORIGINAL_CWD="$ORIGINAL_CWD" node src/generate.js "$@" 2>&1)
 exit_code=$?
 set -e
 
@@ -111,7 +160,7 @@ elif command -v ss >/dev/null 2>&1 && ss -tln "sport = :$PORT" | grep -q LISTEN;
 else
   echo ""
   echo "Starting dev server..."
-  pnpm vite --port $PORT &
+  REVIEW_AI_PROVIDER="$AI_PROVIDER" REVIEW_ORIGINAL_CWD="$ORIGINAL_CWD" pnpm vite --port $PORT &
   VITE_PID=$!
   sleep 2
   echo "Review tool running at $url (PID: $VITE_PID)"

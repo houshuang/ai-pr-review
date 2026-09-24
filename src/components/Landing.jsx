@@ -135,12 +135,12 @@ export function Landing() {
         <div className="landing-options">
           <div className="landing-card">
             <h3>GitHub PR</h3>
-            <p>Enter a GitHub PR URL to generate an interactive walkthrough.</p>
+            <p>Enter a GitHub PR URL &mdash; or just a branch name &mdash; to generate an interactive walkthrough.</p>
             <div className="input-group">
               <input
                 type="text"
                 id="pr-url"
-                placeholder="https://github.com/owner/repo/pull/123"
+                placeholder="https://github.com/owner/repo/pull/123 or sh/my-branch"
                 value={url}
                 onInput={(e) => setUrl(e.target.value)}
                 onKeyDown={handleKeyDown}

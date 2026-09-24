@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "generate": "node src/generate.js",
     "review": "./bin/review",
-    "export": "node src/export-static.js"
+    "export": "node src/export-static.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

@@ -58,6 +58,8 @@ export function ChatThread() {
   const sections = d?.walkthrough?.sections || [];
   const currentSection = sections[currentSectionIndex.value] || null;
   const sectionId = currentSection?.id || null;
+  const aiProvider = d?.meta?.aiProvider || "claude";
+  const assistantName = aiProvider === "codex" ? "Codex" : "Claude";
 
   // Messages for current section
   const threadMessages = chatMessages.value.filter(m => m.sectionId === sectionId);
@@ -144,6 +146,7 @@ export function ChatThread() {
           prTitle: d?.walkthrough?.title,
           prUrl: d?.meta?.url,
           prOverview: d?.walkthrough?.overview,
+          aiProvider,
         }),
       });
 
@@ -233,7 +236,7 @@ export function ChatThread() {
               <div class={`chat-msg-avatar chat-msg-avatar-${msg.role}`}>
                 {msg.role === "user" ? "Y" : "C"}
               </div>
-              <span class="chat-msg-name">{msg.role === "user" ? "You" : "Claude"}</span>
+              <span class="chat-msg-name">{msg.role === "user" ? "You" : assistantName}</span>
               <span class="chat-msg-time">{formatTime(msg.timestamp)}</span>
             </div>
             <div
@@ -247,7 +250,7 @@ export function ChatThread() {
           <div class="chat-msg chat-msg-assistant chat-msg-streaming">
             <div class="chat-msg-header">
               <div class="chat-msg-avatar chat-msg-avatar-assistant">C</div>
-              <span class="chat-msg-name">Claude</span>
+              <span class="chat-msg-name">{assistantName}</span>
               <span class="chat-msg-time">streaming&hellip;</span>
             </div>
             <div
@@ -319,4 +322,3 @@ function formatTime(ts) {
     return "";
   }
 }
-
