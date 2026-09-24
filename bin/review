@@ -27,36 +27,65 @@ usage() {
   echo "       review --diff path/to/diff.patch"
   echo "       review --export <slug> [--output path.html] [--mode side-by-side|unified]"
   echo ""
+  echo "       review --set-default claude|codex"
+  echo ""
   echo "Flags:"
-  echo "  --claude            Use Claude instead of the default Codex provider"
-  echo "  --codex             Explicitly use Codex (the default)"
+  echo "  --claude            Use Claude for this run"
+  echo "  --codex             Use Codex for this run"
+  echo "  --set-default X     Save claude or codex as the default provider"
   echo "  --force             Skip the cached walkthrough and regenerate from scratch"
   echo ""
+  echo "The first run asks which provider to use by default and saves the answer to"
+  echo "  \${XDG_CONFIG_HOME:-~/.config}/ai-pr-review/config.json"
+  echo ""
   echo "Environment:"
-  echo "  ANTHROPIC_API_KEY   Required only when using --claude"
-  echo "  REVIEW_AI_PROVIDER  AI provider: codex (default) or claude"
+  echo "  ANTHROPIC_API_KEY   Needed for Claude (or put it in .env)"
+  echo "  REVIEW_AI_PROVIDER  claude or codex; overrides the saved default"
   echo "  REVIEW_CODEX_MODEL  Optional Codex model override (default: Codex CLI config)"
-  echo "  REVIEW_MODEL        Optional Claude model override (default: claude-opus-5)"
+  echo "  REVIEW_MODEL        Optional Claude model override (default: claude-opus-5-5)"
   echo "  REVIEW_PORT         Dev server port (default: 5200)"
   echo ""
   echo "Logs are written to: $LOG_DIR/"
 }
 
-# Provider flags may appear anywhere in the command. Consume them here so the
+# Provider options may appear anywhere in the command. Consume them here so the
 # generator sees the same positional arguments as before.
-AI_PROVIDER="${REVIEW_AI_PROVIDER:-codex}"
+PROVIDER_ARGS=()
+SETS_DEFAULT=""
 REVIEW_ARGS=()
-for arg in "$@"; do
-  case "$arg" in
-    --claude) AI_PROVIDER="claude" ;;
-    --codex) AI_PROVIDER="codex" ;;
-    *) REVIEW_ARGS+=("$arg") ;;
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --claude|--codex) PROVIDER_ARGS+=("$1") ;;
+    --set-default=*) PROVIDER_ARGS+=("$1"); SETS_DEFAULT=1 ;;
+    --set-default)
+      if [ $# -lt 2 ]; then
+        echo "--set-default needs a value: claude or codex" >&2
+        exit 1
+      fi
+      PROVIDER_ARGS+=("$1" "$2")
+      SETS_DEFAULT=1
+      shift
+      ;;
+    *) REVIEW_ARGS+=("$1") ;;
   esac
+  shift
 done
-set -- "${REVIEW_ARGS[@]}"
+set -- ${REVIEW_ARGS[@]+"${REVIEW_ARGS[@]}"}
 
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
   usage
+  exit 0
+fi
+
+# Prints the provider on stdout; the prompt (first run only) and the one-line
+# explanation go to the terminal on stderr.
+choose_provider() {
+  AI_PROVIDER="$(node "$REVIEW_TOOL_DIR/src/provider-config.js" ${PROVIDER_ARGS[@]+"${PROVIDER_ARGS[@]}"})" || exit 1
+}
+
+if [ -z "$1" ] && [ -n "$SETS_DEFAULT" ]; then
+  # `review --set-default X` on its own just saves the default.
+  choose_provider
   exit 0
 fi
 
@@ -67,7 +96,7 @@ if [ -z "$1" ]; then
     echo "Dev server already running at http://localhost:${PORT}/"
   else
     echo "Starting dev server..."
-    REVIEW_AI_PROVIDER="$AI_PROVIDER" pnpm vite --port $PORT &
+    pnpm vite --port $PORT &
     VITE_PID=$!
     sleep 2
     echo "Review tool running at http://localhost:${PORT}/ (PID: $VITE_PID)"
@@ -93,6 +122,7 @@ if [ "$1" = "--export" ]; then
   exit $?
 fi
 
+choose_provider
 log "$(date '+%Y-%m-%d %H:%M:%S') - review $*"
 log "Generating walkthrough with ${AI_PROVIDER}..."
 

@@ -10,7 +10,7 @@ An AI-powered code review tool that turns pull requests into interactive, narrat
 
 Reading a 30-file PR is hard. You see lines added and removed, but not the *story* — which changes are foundational, which are mechanical follow-through, and how the pieces connect. Good PR authors write descriptions, but the description and the diff are separate experiences.
 
-This tool bridges them. It uses Codex by default to analyze the full PR — diffs, commit history, file ages, existing review comments — and produces a structured walkthrough that sequences the changes for progressive understanding. Claude remains available with the `--claude` switch. The walkthrough is rendered as an interactive review UI where you can read the narrative, inspect the diffs, post comments, and submit your review — all in one place.
+This tool bridges them. It uses Claude or Codex, whichever you choose, to analyze the full PR — diffs, commit history, file ages, existing review comments — and produces a structured walkthrough that sequences the changes for progressive understanding. The walkthrough is rendered as an interactive review UI where you can read the narrative, inspect the diffs, post comments, and submit your review — all in one place.
 
 ## Quick start
 
@@ -18,21 +18,22 @@ This tool bridges them. It uses Codex by default to analyze the full PR — diff
 git clone https://github.com/houshuang/ai-pr-review.git
 cd ai-pr-review
 pnpm install
-cp .env.example .env   # then put your Anthropic API key in .env
+cp .env.example .env   # for Claude: put your Anthropic API key in .env
 
 # Review any GitHub PR you can read with `gh`
 ./bin/review https://github.com/owner/repo/pull/123
 ```
 
-This fetches the PR, generates a walkthrough with Codex, starts a local viewer on http://localhost:5200 and opens it in your browser. Generation takes a few minutes; later runs on the same commit reuse the cached walkthrough.
+The first run asks whether Claude or Codex should generate walkthroughs by default and saves the answer (see [Choosing the AI provider](#choosing-the-ai-provider)). It then fetches the PR, generates the walkthrough, starts a local viewer on http://localhost:5200 and opens it in your browser. Generation takes about a minute for a small PR and several minutes for a large one; later runs on the same commit reuse the cached walkthrough.
 
 ### Requirements
 
 - macOS or Linux (the CLI is a bash script)
 - Node.js 20+, pnpm (10 or 11)
 - [GitHub CLI](https://cli.github.com/) (`gh auth login`)
-- [Codex CLI](https://github.com/openai/codex), installed and authenticated
-- To use `--claude`: Anthropic API key (`export ANTHROPIC_API_KEY=sk-ant-...` or add to `.env`)
+- At least one provider:
+  - Claude: an Anthropic API key (`export ANTHROPIC_API_KEY=sk-ant-...` or add it to `.env`)
+  - Codex: the [Codex CLI](https://github.com/openai/codex), installed and logged in (`codex login`)
 
 ## How it works
 
@@ -52,8 +53,8 @@ This fetches the PR, generates a walkthrough with Codex, starts a local viewer o
                     └──────────┬──────────┘
                                │
                     ┌──────────▼──────────┐
-                    │   Codex (default)   │
-                    │   Claude (switch)   │
+                    │   Claude or Codex   │
+                    │                     │
                     │                     │
                     │  Structured JSON    │
                     │  walkthrough with   │
@@ -76,7 +77,7 @@ This fetches the PR, generates a walkthrough with Codex, starts a local viewer o
 
 **Viewer** (Preact SPA) — Renders the walkthrough as an interactive review UI. Diffs are syntax-highlighted and filtered to show only the relevant hunks per section. The Vite dev server proxies GitHub API calls through `gh`, so posting comments and submitting reviews works without managing tokens.
 
-**AI Chat** — Each section has a chat assistant powered by the provider that generated the walkthrough. It receives the section's narrative, annotations, callouts and the conversation so far as context.
+**AI Chat** — Each section has a chat assistant that answers questions about the code changes, using the provider that generated the walkthrough. The dev server sends it the PR title and overview, the section's narrative, annotations and callouts, and the conversation so far; it does not read the rest of the codebase (the background tip investigation below does).
 
 ## Features
 
@@ -124,7 +125,7 @@ Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions abo
 - **Large PR handling** — Prioritizes modified/deleted files (they touch existing code), includes smaller new files in full, summarizes large new files
 - **Incremental updates** — When a branch gets new commits, the generator computes the delta diff between the cached head SHA and the new head SHA. Empty delta (force-push of identical content) reuses the cached walkthrough verbatim. Small delta (≤30KB and ≤8 affected files) runs **patch mode**: the selected provider receives only the delta plus the previous walkthrough and returns a JSON patch (`updated_sections`, `added_sections`, `removed_section_ids`, `file_map_changes`, `review_tips`) which is merged programmatically. Larger deltas fall back to full regeneration. Patch-mode failures fall back to full regen automatically
 - **SHA-based caching** — Same SHA = instant reuse, just refreshes comments and reviews
-- **Resilient Claude API calls** — streaming responses, TCP keepalive (undici Agent), 15-minute timeout, 3 retries with exponential backoff, detailed error diagnostics logged to `logs/`
+- **Resilient AI calls** — Claude: streaming responses, TCP keepalive (undici Agent), 15-minute timeout, 3 retries with exponential backoff. Codex: prompt over stdin, 15-minute timeout, the CLI's own error message reported with a fix hint (upgrade, `codex login`, unsupported model). Diagnostics and token counts for both go to `logs/`
 - **Resilient JSON parsing** — if the AI returns malformed JSON, the full response is dumped to `logs/failed-response-<timestamp>.txt` and a two-stage repair pipeline runs (local position-based escape pass, then an AI "fix syntax only" fallback) before the run is failed
 - **Verified review tips** — The AI generates review concerns during the walkthrough; a detached background process (`src/resolve-info-tips.js`) then verifies them so the viewer opens immediately after generation, with spinners on pending tips. Stage 1 classifies every tip against the diff as `verified` (✓, addressed), `concern` (⚠, real issue), or `info` (ℹ, can't tell from diff alone)
 - **Background investigation of info tips** — Stage 2 investigates tips the diff couldn't settle in the actual codebase using the selected provider's read-only tools. The viewer polls the JSON every 4s, auto-updating as each tip resolves with specific `file:line` findings. For URL-based reviews, if the invoking directory isn't a clone of the PR's repo, the resolver shallow-clones the repo at the PR head into `.cache/repos/` (cached across runs) so tips are always investigated against the real code; `--local`/`--diff` mode uses the invoking directory
@@ -141,8 +142,9 @@ Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions abo
 # Force regeneration (skip cache)
 ./bin/review https://github.com/owner/repo/pull/123 --force
 
-# Use Claude instead of the default Codex provider
+# Use a specific provider for this run only
 ./bin/review https://github.com/owner/repo/pull/123 --claude
+./bin/review https://github.com/owner/repo/pull/123 --codex
 ```
 
 ### From a branch name
@@ -194,19 +196,38 @@ rest are printed so you can rerun with an explicit URL.
 
 The slug is printed at the end of generation (`Slug: owner-repo-123`). You can also press `p` in the viewer to export.
 
+## Choosing the AI provider
+
+Walkthrough generation, tip verification and investigation, and section chat all run on one provider:
+
+- **Claude** — the Anthropic API, billed to your API key.
+- **Codex** — the Codex CLI in a read-only, ephemeral sandbox, on whatever account `codex login` uses.
+
+The first time `review` generates a walkthrough it asks which one to use by default and saves the answer to `${XDG_CONFIG_HOME:-~/.config}/ai-pr-review/config.json`. Every run prints one line saying which provider it is using and how to change it.
+
+```bash
+./bin/review --set-default claude   # change the saved default
+./bin/review <PR url> --codex       # override it for one run
+REVIEW_AI_PROVIDER=codex ./bin/review <PR url>   # override it from the environment
+```
+
+A flag beats `REVIEW_AI_PROVIDER`, which beats the saved default. When no default is saved and there is no terminal to ask (CI, scripts, `node src/generate.js`), the tool uses Claude if an Anthropic key is available, otherwise Codex if the `codex` CLI is on `PATH`, and otherwise stops with an error. Nothing is saved in that case.
+
+A walkthrough records the provider that generated it: its chat uses the same provider, and regenerating with a different provider starts from scratch instead of patching the cached walkthrough.
+
 ## Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `REVIEW_AI_PROVIDER` | AI provider (`codex` or `claude`) | `codex` |
-| `REVIEW_CODEX_MODEL` | Codex model override; otherwise uses Codex CLI config | — |
-| `ANTHROPIC_API_KEY` | Anthropic API key (required with `--claude`) | — |
-| `REVIEW_PORT` | Dev server port | `5200` |
+| `ANTHROPIC_API_KEY` | Anthropic API key, needed for Claude | — |
+| `REVIEW_AI_PROVIDER` | `claude` or `codex`; overrides the saved default | saved default |
 | `REVIEW_MODEL` | Claude model for generation, tip investigation, and chat (e.g. `claude-sonnet-5` for cheaper runs) | `claude-opus-5-5` |
+| `REVIEW_CODEX_MODEL` | Codex model override | Codex CLI config |
+| `REVIEW_PORT` | Dev server port | `5200` |
 
-For Claude, copy `.env.example` to `.env` and add your key, or set it as an environment variable.
+For Claude, copy `.env.example` to `.env` and add your key, or set it as an environment variable. Only the key is read from `.env`; the other variables come from the shell environment.
 
-Every run calls the Anthropic API on your key: one generation call, then a background pass that verifies the review tips. Walkthroughs, the repo clones used for tip investigation (`.cache/`) and logs (`logs/`) stay on your machine.
+Generating a walkthrough makes one AI call, then a background pass that verifies the review tips (and investigates those the diff cannot settle). Reusing a cached walkthrough, or just opening the viewer, makes no AI calls; chat makes one per message. Walkthroughs, the repo clones used for tip investigation (`.cache/`) and logs (`logs/`) stay on your machine.
 
 ## Project structure
 
@@ -214,6 +235,9 @@ Every run calls the Anthropic API on your key: one generation call, then a backg
 bin/review              CLI entry point (bash)
 src/
   generate.js           Walkthrough generator — fetches PR data, calls the selected AI
+  ai-provider.js        Codex CLI runner shared by generation, tips and chat
+  provider-config.js    Provider choice: flags, env, saved default, first-run prompt
+  resolve-branch.js     Resolves a bare branch name to its PR
   resolve-info-tips.js  Background resolver — investigates unresolved review tips
                         in the target repo using read-only AI tools, rewrites JSON
                         in place as each tip resolves

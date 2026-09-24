@@ -21,11 +21,12 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { sanitizeWalkthroughDiagrams } from "./mermaid-sanitize.js";
 import { GENERATION_MODEL, REPAIR_MODEL } from "./models.js";
-import { AI_PROVIDER, runCodex } from "./ai-provider.js";
+import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
 import { looksLikeBranchName, resolveBranchToPR } from "./resolve-branch.js";
 import { Agent as UndiciAgent } from "undici";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const AI_PROVIDER = resolveAIProvider();
 const execAsync = promisify(execCb);
 
 // Run fn over items with bounded concurrency, preserving order of results.
@@ -147,7 +148,11 @@ async function repairJSONWithAI(text, client) {
       "You are a JSON repair tool. The user provides a malformed JSON document. Return ONLY the corrected JSON — no commentary, no markdown fences. Preserve all content exactly; only fix syntax errors (unescaped quotes inside strings, raw newlines inside strings, missing/trailing commas, control characters).";
     let fixed;
     if (AI_PROVIDER === "codex") {
-      fixed = await runCodex({ systemPrompt, userPrompt: text });
+      fixed = await runCodex({
+        systemPrompt,
+        userPrompt: text,
+        onUsage: (usage) => log("INFO", `Repair response: ${formatCodexUsage(usage)}`),
+      });
     } else {
       const stream = client.messages.stream({
         model: REPAIR_MODEL,
@@ -889,6 +894,7 @@ Generate the walkthrough JSON. Important reminders:
   let text;
   if (AI_PROVIDER === "codex") {
     let progressStarted = false;
+    let usage = null;
     text = await runCodex({
       systemPrompt: SYSTEM_PROMPT,
       userPrompt,
@@ -899,8 +905,9 @@ Generate the walkthrough JSON. Important reminders:
           log("INFO", "Codex is working...");
         }
       },
+      onUsage: (u) => { usage = u; },
     });
-    log("INFO", `Codex response: ${text.length} characters`);
+    log("INFO", `Codex response: ${text.length} characters, ${formatCodexUsage(usage)}`);
   } else {
     let response;
     try {
@@ -1195,12 +1202,14 @@ Return ONLY the JSON patch.`;
   let text;
   try {
     if (AI_PROVIDER === "codex") {
+      let usage = null;
       text = await runCodex({
         systemPrompt,
         userPrompt,
         cwd: process.env.REVIEW_ORIGINAL_CWD || process.cwd(),
+        onUsage: (u) => { usage = u; },
       });
-      log("INFO", `Codex patch response: ${text.length} characters`);
+      log("INFO", `Codex patch response: ${text.length} characters, ${formatCodexUsage(usage)}`);
     } else {
       const stream = client.messages.stream({
         model: GENERATION_MODEL,
@@ -1459,7 +1468,7 @@ async function main() {
     const child = spawn(process.execPath, [resolverPath, slug, repoPath], {
       detached: true,
       stdio: ["ignore", resolverLog, resolverLog],
-      env: process.env,
+      env: { ...process.env, REVIEW_AI_PROVIDER: AI_PROVIDER },
     });
     child.unref();
     console.log(`\n⟳ Verifying ${pendingCount} review tip${pendingCount === 1 ? "" : "s"} in the background (pid ${child.pid})`);

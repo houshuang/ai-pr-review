@@ -24,9 +24,10 @@ import { execFileSync } from "child_process";
 import { resolve, dirname, relative, join } from "path";
 import { fileURLToPath } from "url";
 import { GENERATION_MODEL } from "./models.js";
-import { AI_PROVIDER, runCodex } from "./ai-provider.js";
+import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const AI_PROVIDER = resolveAIProvider();
 
 const LOG_DIR = resolve(__dirname, "..", "logs");
 mkdirSync(LOG_DIR, { recursive: true });
@@ -261,11 +262,13 @@ ${diff.slice(0, 400000)}${diff.length > 400000 ? "\n... (diff truncated — trea
   try {
     let text;
     if (AI_PROVIDER === "codex") {
+      let usage = null;
       text = await runCodex({
         userPrompt: prompt,
         cwd: process.env.REVIEW_ORIGINAL_CWD || process.cwd(),
+        onUsage: (u) => { usage = u; },
       });
-      log("INFO", `Codex tip verification: ${text.length} characters`);
+      log("INFO", `Codex tip verification: ${formatCodexUsage(usage)}`);
     } else {
       const stream = client.messages.stream({
         model: GENERATION_MODEL,
@@ -303,6 +306,7 @@ ${diff.slice(0, 400000)}${diff.length > 400000 ? "\n... (diff truncated — trea
     }
     return verified.length > 0 ? verified : null;
   } catch (err) {
+    if (err.codexSetupFailure) codexSetupFailure = err.message;
     log("WARN", `Tip verification failed (${err.message}) — sending all tips to investigation`);
     return null;
   }
@@ -351,10 +355,19 @@ Status meanings:
 - info: it genuinely requires runtime testing or external context`;
 
     try {
+      let codexUsage = null;
       const text = await runCodex({
         userPrompt: prompt,
         cwd: repoPath,
+        onUsage: (u) => { codexUsage = u; },
       });
+      const usage = {
+        input: (codexUsage?.input || 0) - (codexUsage?.cachedInput || 0),
+        output: codexUsage?.output || 0,
+        cacheRead: codexUsage?.cachedInput || 0,
+        cacheWrite: 0,
+        rounds: 1,
+      };
       const candidates = [
         ...[...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((match) => match[1].trim()).reverse(),
         text.trim(),
@@ -369,7 +382,7 @@ Status meanings:
               finding: parsed.finding,
               pending: false,
               resolved: true,
-              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, rounds: 1 },
+              usage,
             };
           }
         } catch {}
@@ -380,7 +393,7 @@ Status meanings:
         finding: text.slice(0, 400) || "Codex did not return a final verdict.",
         pending: false,
         resolved: true,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, rounds: 1 },
+        usage,
       };
     } catch (err) {
       if (err.codexSetupFailure) codexSetupFailure = err.message;

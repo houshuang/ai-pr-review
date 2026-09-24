@@ -4,6 +4,7 @@ import { execSync } from 'child_process';
 import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { tmpdir } from 'os';
 import Anthropic from '@anthropic-ai/sdk';
 import { GENERATION_MODEL } from './src/models.js';
 import { resolveAIProvider, runCodex } from './src/ai-provider.js';
@@ -272,10 +273,15 @@ function chatMiddleware() {
               const conversation = messages
                 .map((item) => `${item.role === 'assistant' ? 'Assistant' : 'User'}: ${item.content}`)
                 .join('\n\n');
+              // Like the Claude path, answer from the section context only;
+              // running outside any repo keeps Codex from browsing unrelated code.
+              const abort = new AbortController();
+              res.on('close', () => { if (!res.writableEnded) abort.abort(); });
               const answer = await runCodex({
                 systemPrompt,
                 userPrompt: `Continue this conversation. Respond only with the assistant's next answer.\n\n${conversation}`,
-                cwd: process.env.REVIEW_ORIGINAL_CWD || __dirname,
+                cwd: tmpdir(),
+                signal: abort.signal,
               });
               res.end(answer);
             } else {
