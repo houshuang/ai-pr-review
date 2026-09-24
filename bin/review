@@ -22,19 +22,38 @@ log() {
 usage() {
   echo "Usage: review <github-pr-url>"
   echo "       review https://github.com/owner/repo/pull/123"
+  echo "       review <branch-name>          (looks the branch up in recently reviewed repos)"
   echo "       review --local [base-branch]"
   echo "       review --diff path/to/diff.patch"
   echo "       review --export <slug> [--output path.html] [--mode side-by-side|unified]"
   echo ""
   echo "Flags:"
+  echo "  --claude            Use Claude instead of the default Codex provider"
+  echo "  --codex             Explicitly use Codex (the default)"
   echo "  --force             Skip the cached walkthrough and regenerate from scratch"
   echo ""
   echo "Environment:"
-  echo "  ANTHROPIC_API_KEY   Required. Your Anthropic API key."
+  echo "  ANTHROPIC_API_KEY   Required only when using --claude"
+  echo "  REVIEW_AI_PROVIDER  AI provider: codex (default) or claude"
+  echo "  REVIEW_CODEX_MODEL  Optional Codex model override (default: Codex CLI config)"
+  echo "  REVIEW_MODEL        Optional Claude model override (default: claude-opus-5)"
   echo "  REVIEW_PORT         Dev server port (default: 5200)"
   echo ""
   echo "Logs are written to: $LOG_DIR/"
 }
+
+# Provider flags may appear anywhere in the command. Consume them here so the
+# generator sees the same positional arguments as before.
+AI_PROVIDER="${REVIEW_AI_PROVIDER:-codex}"
+REVIEW_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --claude) AI_PROVIDER="claude" ;;
+    --codex) AI_PROVIDER="codex" ;;
+    *) REVIEW_ARGS+=("$arg") ;;
+  esac
+done
+set -- "${REVIEW_ARGS[@]}"
 
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
   usage
@@ -48,7 +67,7 @@ if [ -z "$1" ]; then
     echo "Dev server already running at http://localhost:${PORT}/"
   else
     echo "Starting dev server..."
-    pnpm vite --port $PORT &
+    REVIEW_AI_PROVIDER="$AI_PROVIDER" pnpm vite --port $PORT &
     VITE_PID=$!
     sleep 2
     echo "Review tool running at http://localhost:${PORT}/ (PID: $VITE_PID)"
@@ -75,12 +94,12 @@ if [ "$1" = "--export" ]; then
 fi
 
 log "$(date '+%Y-%m-%d %H:%M:%S') - review $*"
-log "Generating walkthrough..."
+log "Generating walkthrough with ${AI_PROVIDER}..."
 
 # Run the generator, capturing output and exit code separately
 # Pass original CWD so git fallback can find the local repo
 set +e
-output=$(REVIEW_ORIGINAL_CWD="$ORIGINAL_CWD" node src/generate.js "$@" 2>&1)
+output=$(REVIEW_AI_PROVIDER="$AI_PROVIDER" REVIEW_ORIGINAL_CWD="$ORIGINAL_CWD" node src/generate.js "$@" 2>&1)
 exit_code=$?
 set -e
 
@@ -111,7 +130,7 @@ elif command -v ss >/dev/null 2>&1 && ss -tln "sport = :$PORT" | grep -q LISTEN;
 else
   echo ""
   echo "Starting dev server..."
-  pnpm vite --port $PORT &
+  REVIEW_AI_PROVIDER="$AI_PROVIDER" REVIEW_ORIGINAL_CWD="$ORIGINAL_CWD" pnpm vite --port $PORT &
   VITE_PID=$!
   sleep 2
   echo "Review tool running at $url (PID: $VITE_PID)"

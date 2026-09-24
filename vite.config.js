@@ -6,6 +6,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import Anthropic from '@anthropic-ai/sdk';
 import { GENERATION_MODEL } from './src/models.js';
+import { resolveAIProvider, runCodex } from './src/ai-provider.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logsDir = resolve(__dirname, 'logs');
@@ -191,7 +192,7 @@ function loadChatApiKey() {
   return null;
 }
 
-// Middleware to handle AI chat via Anthropic API (streaming)
+// Middleware to handle AI chat with the provider used for the walkthrough.
 function chatMiddleware() {
   return {
     name: 'chat-middleware',
@@ -210,16 +211,9 @@ function chatMiddleware() {
             const {
               message, history, sectionTitle,
               sectionNarrative, sectionHunks, sectionCallouts, sectionDiagram,
-              prTitle, prUrl, prOverview,
+              prTitle, prUrl, prOverview, aiProvider,
             } = JSON.parse(body);
-
-            const apiKey = loadChatApiKey();
-            if (!apiKey) {
-              res.statusCode = 500;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ error: 'No ANTHROPIC_API_KEY configured' }));
-              return;
-            }
+            const provider = resolveAIProvider(aiProvider);
 
             // Build rich hunk context
             let hunksContext = '';
@@ -274,24 +268,43 @@ function chatMiddleware() {
             res.setHeader('Content-Type', 'text/plain; charset=utf-8');
             res.setHeader('Cache-Control', 'no-cache');
 
-            const client = new Anthropic({ apiKey });
-            const stream = await client.messages.stream({
-              model: GENERATION_MODEL,
-              max_tokens: 4096,
-              system: systemPrompt,
-              messages,
-            });
-
-            let aborted = false;
-            res.on('close', () => { aborted = true; stream.abort(); });
-
-            for await (const event of stream) {
-              if (aborted) break;
-              if (event.type === 'content_block_delta' && event.delta?.text) {
-                res.write(event.delta.text);
+            if (provider === 'codex') {
+              const conversation = messages
+                .map((item) => `${item.role === 'assistant' ? 'Assistant' : 'User'}: ${item.content}`)
+                .join('\n\n');
+              const answer = await runCodex({
+                systemPrompt,
+                userPrompt: `Continue this conversation. Respond only with the assistant's next answer.\n\n${conversation}`,
+                cwd: process.env.REVIEW_ORIGINAL_CWD || __dirname,
+              });
+              res.end(answer);
+            } else {
+              const apiKey = loadChatApiKey();
+              if (!apiKey) {
+                res.statusCode = 500;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: 'No ANTHROPIC_API_KEY configured' }));
+                return;
               }
+              const client = new Anthropic({ apiKey });
+              const stream = await client.messages.stream({
+                model: GENERATION_MODEL,
+                max_tokens: 4096,
+                system: systemPrompt,
+                messages,
+              });
+
+              let aborted = false;
+              res.on('close', () => { aborted = true; stream.abort(); });
+
+              for await (const event of stream) {
+                if (aborted) break;
+                if (event.type === 'content_block_delta' && event.delta?.text) {
+                  res.write(event.delta.text);
+                }
+              }
+              res.end();
             }
-            res.end();
           } catch (err) {
             if (!res.headersSent) {
               res.statusCode = 500;

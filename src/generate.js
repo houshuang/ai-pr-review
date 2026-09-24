@@ -3,6 +3,7 @@
  *
  * Usage:
  *   node src/generate.js https://github.com/owner/repo/pull/123
+ *   node src/generate.js sh/my-branch          (resolved to a PR)
  *   node src/generate.js --local [base-branch]
  *   node src/generate.js --diff path/to/diff.patch
  */
@@ -20,6 +21,8 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { sanitizeWalkthroughDiagrams } from "./mermaid-sanitize.js";
 import { GENERATION_MODEL, REPAIR_MODEL } from "./models.js";
+import { AI_PROVIDER, runCodex } from "./ai-provider.js";
+import { looksLikeBranchName, resolveBranchToPR } from "./resolve-branch.js";
 import { Agent as UndiciAgent } from "undici";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +57,7 @@ function log(level, ...args) {
   }
 }
 
-// --- JSON parse / repair / dump for Claude responses ---
+// --- JSON parse / repair / dump for AI responses ---
 
 function dumpFailedResponse(text, err) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -65,7 +68,7 @@ function dumpFailedResponse(text, err) {
 }
 
 // Iteratively repair JSON by escaping the offending character at the position
-// reported by JSON.parse's error message. Catches the dominant Claude failure
+// reported by JSON.parse's error message. Catches the dominant model failure
 // mode: a stray unescaped `"` or control char inside a string value.
 function tryRepairJSON(text) {
   let candidate = text
@@ -137,19 +140,25 @@ function dumpRawResponse(text, label) {
   return dumpPath;
 }
 
-async function repairJSONWithClaude(text, client) {
-  log("INFO", "Local repair failed — asking Claude to fix the JSON...");
+async function repairJSONWithAI(text, client) {
+  log("INFO", `Local repair failed — asking ${AI_PROVIDER === "codex" ? "Codex" : "Claude"} to fix the JSON...`);
   try {
-    const stream = client.messages.stream({
-      model: REPAIR_MODEL,
-      max_tokens: 64000,
-      system:
-        "You are a JSON repair tool. The user provides a malformed JSON document. Return ONLY the corrected JSON — no commentary, no markdown fences. Preserve all content exactly; only fix syntax errors (unescaped quotes inside strings, raw newlines inside strings, missing/trailing commas, control characters).",
-      messages: [{ role: "user", content: text }],
-    });
-    const response = await stream.finalMessage();
-    log("INFO", `Repair response: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-    const fixed = extractText(response);
+    const systemPrompt =
+      "You are a JSON repair tool. The user provides a malformed JSON document. Return ONLY the corrected JSON — no commentary, no markdown fences. Preserve all content exactly; only fix syntax errors (unescaped quotes inside strings, raw newlines inside strings, missing/trailing commas, control characters).";
+    let fixed;
+    if (AI_PROVIDER === "codex") {
+      fixed = await runCodex({ systemPrompt, userPrompt: text });
+    } else {
+      const stream = client.messages.stream({
+        model: REPAIR_MODEL,
+        max_tokens: 64000,
+        system: systemPrompt,
+        messages: [{ role: "user", content: text }],
+      });
+      const response = await stream.finalMessage();
+      log("INFO", `Repair response: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+      fixed = extractText(response);
+    }
     for (const candidate of extractJSONCandidates(fixed)) {
       try {
         return JSON.parse(candidate);
@@ -157,7 +166,7 @@ async function repairJSONWithClaude(text, client) {
     }
     return null;
   } catch (err) {
-    log("WARN", `Claude repair failed: ${err.message}`);
+    log("WARN", `${AI_PROVIDER === "codex" ? "Codex" : "Claude"} repair failed: ${err.message}`);
     return null;
   }
 }
@@ -793,25 +802,27 @@ function formatGitHistoryForPrompt(gitHistory) {
 }
 
 async function generateWalkthrough(prData, previousWalkthrough = null) {
-  const apiKey = loadEnvKey();
-  if (!apiKey) {
-    throw new Error(
-      "No Anthropic API key found. Set ANTHROPIC_API_KEY env var or add ANTHROPIC_API_KEY=... to .env in project root"
-    );
+  let client = null;
+  if (AI_PROVIDER === "claude") {
+    const apiKey = loadEnvKey();
+    if (!apiKey) {
+      throw new Error(
+        "No Anthropic API key found. Set ANTHROPIC_API_KEY env var or add ANTHROPIC_API_KEY=... to .env in project root"
+      );
+    }
+    client = new Anthropic({
+      apiKey,
+      timeout: 15 * 60 * 1000, // 15 minutes — large diffs need time
+      maxRetries: 3,
+      fetchOptions: {
+        dispatcher: new UndiciAgent({
+          connect: { keepAlive: true, keepAliveInitialDelay: 5000 },
+          bodyTimeout: 15 * 60 * 1000,
+          headersTimeout: 15 * 60 * 1000,
+        }),
+      },
+    });
   }
-
-  const client = new Anthropic({
-    apiKey,
-    timeout: 15 * 60 * 1000, // 15 minutes — large diffs need time
-    maxRetries: 3,
-    fetchOptions: {
-      dispatcher: new UndiciAgent({
-        connect: { keepAlive: true, keepAliveInitialDelay: 5000 },
-        bodyTimeout: 15 * 60 * 1000,
-        headersTimeout: 15 * 60 * 1000,
-      }),
-    },
-  });
 
   // For large diffs, focus on code that interacts with existing system
   const { diff: focusedDiff, largePRSummary, filteredFiles } = buildFocusedDiff(prData.diff);
@@ -872,48 +883,59 @@ Generate the walkthrough JSON. Important reminders:
 - Mermaid diagrams: raw mermaid syntax only, do NOT wrap in \`\`\`mermaid code fences
 - file_map must include every file in the diff${largePRSummary ? " (including summarized/filtered files — mark them with a note that diff was omitted or auto-excluded)" : ""}`;
 
-  log("INFO", "Sending to Claude API...");
+  log("INFO", `Sending to ${AI_PROVIDER === "codex" ? "Codex CLI" : "Claude API"}...`);
   log("INFO", `Diff size: ${(focusedDiff.length / 1024).toFixed(1)}KB${largePRSummary ? ` (focused from ${(prData.diff.length / 1024).toFixed(1)}KB)` : ""}`);
 
-  let response;
-  try {
-    // Use streaming to prevent TCP read timeouts on large diffs.
-    // With non-streaming, long silent waits between request and response
-    // trigger OS/network-level ETIMEDOUT errors. Streaming keeps data flowing.
-    const stream = client.messages.stream({
-      model: GENERATION_MODEL,
-      max_tokens: 64000,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: userPrompt }],
+  let text;
+  if (AI_PROVIDER === "codex") {
+    let progressStarted = false;
+    text = await runCodex({
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt,
+      cwd: process.env.REVIEW_ORIGINAL_CWD || process.cwd(),
+      onProgress: () => {
+        if (!progressStarted) {
+          progressStarted = true;
+          log("INFO", "Codex is working...");
+        }
+      },
     });
-
-    // Log progress as tokens arrive
-    let tokenCount = 0;
-    stream.on("text", () => {
-      tokenCount++;
-      if (tokenCount === 1) log("INFO", "First token received, streaming...");
-      if (tokenCount % 2000 === 0) log("INFO", `  ...${tokenCount} tokens received`);
-    });
-
-    response = await stream.finalMessage();
-  } catch (err) {
-    if (err instanceof APIConnectionTimeoutError) {
-      log("ERROR", "API request timed out after 15 minutes (including retries)");
-    } else if (err instanceof APIConnectionError) {
-      log("ERROR", `API connection failed: ${err.message}${err.cause ? ` (cause: ${err.cause})` : ""}`);
-    } else if (err instanceof RateLimitError) {
-      const retryAfter = err.headers?.["retry-after"];
-      log("ERROR", `Rate limited (429)${retryAfter ? ` — retry after ${retryAfter}s` : ""}`);
-    } else if (err instanceof InternalServerError) {
-      log("ERROR", `API server error (${err.status}): ${err.message}`);
-    } else if (err.status) {
-      log("ERROR", `API error (${err.status}): ${err.message}`);
+    log("INFO", `Codex response: ${text.length} characters`);
+  } else {
+    let response;
+    try {
+      // Use streaming to prevent TCP read timeouts on large diffs.
+      const stream = client.messages.stream({
+        model: GENERATION_MODEL,
+        max_tokens: 64000,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userPrompt }],
+      });
+      let tokenCount = 0;
+      stream.on("text", () => {
+        tokenCount++;
+        if (tokenCount === 1) log("INFO", "First token received, streaming...");
+        if (tokenCount % 2000 === 0) log("INFO", `  ...${tokenCount} tokens received`);
+      });
+      response = await stream.finalMessage();
+    } catch (err) {
+      if (err instanceof APIConnectionTimeoutError) {
+        log("ERROR", "API request timed out after 15 minutes (including retries)");
+      } else if (err instanceof APIConnectionError) {
+        log("ERROR", `API connection failed: ${err.message}${err.cause ? ` (cause: ${err.cause})` : ""}`);
+      } else if (err instanceof RateLimitError) {
+        const retryAfter = err.headers?.["retry-after"];
+        log("ERROR", `Rate limited (429)${retryAfter ? ` — retry after ${retryAfter}s` : ""}`);
+      } else if (err instanceof InternalServerError) {
+        log("ERROR", `API server error (${err.status}): ${err.message}`);
+      } else if (err.status) {
+        log("ERROR", `API error (${err.status}): ${err.message}`);
+      }
+      throw err;
     }
-    throw err;
+    log("INFO", `API response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+    text = extractText(response);
   }
-
-  log("INFO", `API response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-  const text = extractText(response);
 
   dumpRawResponse(text, "walkthrough");
 
@@ -943,9 +965,9 @@ Generate the walkthrough JSON. Important reminders:
     } else {
       const dumpPath = dumpFailedResponse(text, e1);
       log("WARN", `Local repair failed. Raw response dumped to: ${dumpPath}`);
-      walkthrough = await repairJSONWithClaude(candidate, client);
+      walkthrough = await repairJSONWithAI(candidate, client);
       if (walkthrough) {
-        log("INFO", "JSON repaired via Claude (Haiku)");
+        log("INFO", `JSON repaired via ${AI_PROVIDER === "codex" ? "Codex" : "Claude (Haiku)"}`);
       } else {
         throw new Error(
           `Failed to parse walkthrough JSON: ${e1.message}\n` +
@@ -1080,21 +1102,23 @@ function applyWalkthroughPatch(prev, patch) {
 }
 
 async function generateIncrementalWalkthrough(prData, previousWalkthrough, deltaDiff, affectedFiles) {
-  const apiKey = loadEnvKey();
-  if (!apiKey) throw new Error("No Anthropic API key found.");
-
-  const client = new Anthropic({
-    apiKey,
-    timeout: 15 * 60 * 1000,
-    maxRetries: 3,
-    fetchOptions: {
-      dispatcher: new UndiciAgent({
-        connect: { keepAlive: true, keepAliveInitialDelay: 5000 },
-        bodyTimeout: 15 * 60 * 1000,
-        headersTimeout: 15 * 60 * 1000,
-      }),
-    },
-  });
+  let client = null;
+  if (AI_PROVIDER === "claude") {
+    const apiKey = loadEnvKey();
+    if (!apiKey) throw new Error("No Anthropic API key found.");
+    client = new Anthropic({
+      apiKey,
+      timeout: 15 * 60 * 1000,
+      maxRetries: 3,
+      fetchOptions: {
+        dispatcher: new UndiciAgent({
+          connect: { keepAlive: true, keepAliveInitialDelay: 5000 },
+          bodyTimeout: 15 * 60 * 1000,
+          headersTimeout: 15 * 60 * 1000,
+        }),
+      },
+    });
+  }
 
   // Strip resolved metadata from prior review_tips so the model sees plain strings
   const plainPrev = JSON.parse(JSON.stringify(previousWalkthrough));
@@ -1168,28 +1192,36 @@ Return ONLY the JSON patch.`;
 
   log("INFO", `Incremental mode: ${affectedFiles.length} files, ${(deltaDiff.length / 1024).toFixed(1)}KB delta`);
 
-  let response;
+  let text;
   try {
-    const stream = client.messages.stream({
-      model: GENERATION_MODEL,
-      max_tokens: 32000,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    });
-    let tokenCount = 0;
-    stream.on("text", () => {
-      tokenCount++;
-      if (tokenCount === 1) log("INFO", "First token received, streaming...");
-      if (tokenCount % 1000 === 0) log("INFO", `  ...${tokenCount} tokens received`);
-    });
-    response = await stream.finalMessage();
+    if (AI_PROVIDER === "codex") {
+      text = await runCodex({
+        systemPrompt,
+        userPrompt,
+        cwd: process.env.REVIEW_ORIGINAL_CWD || process.cwd(),
+      });
+      log("INFO", `Codex patch response: ${text.length} characters`);
+    } else {
+      const stream = client.messages.stream({
+        model: GENERATION_MODEL,
+        max_tokens: 32000,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+      });
+      let tokenCount = 0;
+      stream.on("text", () => {
+        tokenCount++;
+        if (tokenCount === 1) log("INFO", "First token received, streaming...");
+        if (tokenCount % 1000 === 0) log("INFO", `  ...${tokenCount} tokens received`);
+      });
+      const response = await stream.finalMessage();
+      log("INFO", `Patch response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+      text = extractText(response);
+    }
   } catch (err) {
-    log("ERROR", `Incremental API call failed: ${err.message}`);
+    log("ERROR", `Incremental AI call failed: ${err.message}`);
     throw err;
   }
-
-  log("INFO", `Patch response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-  const text = extractText(response);
 
   // Parse patch JSON with the same resilience as the full path
   dumpRawResponse(text, "patch");
@@ -1216,7 +1248,7 @@ Return ONLY the JSON patch.`;
     if (!patch) {
       const dumpPath = dumpFailedResponse(text, e1);
       log("WARN", `Patch parse failed. Raw response: ${dumpPath}`);
-      patch = await repairJSONWithClaude(candidate, client);
+      patch = await repairJSONWithAI(candidate, client);
     }
     if (!patch) {
       throw new Error(`Failed to parse incremental patch JSON: ${e1.message}`);
@@ -1237,6 +1269,41 @@ Return ONLY the JSON patch.`;
   return merged;
 }
 
+// A bare branch name (`review sh/my-branch`) is resolved to a PR by searching
+// the repo you invoked from plus the repos most recently walked through here.
+async function resolveBranchArg(branch) {
+  const cwd = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
+  const walkthroughsDir = resolve(__dirname, "..", "public", "walkthroughs");
+  console.log(`Looking up branch "${branch}"...`);
+
+  const { pr, others, searched, allQueriesFailed } = await resolveBranchToPR(branch, {
+    cwd,
+    walkthroughsDir,
+  });
+
+  if (!pr) {
+    const where = searched.length ? searched.join(", ") : "(no recent repos found)";
+    throw new Error(
+      `No pull request found with head branch "${branch}".\n` +
+        `Searched: ${where}` +
+        (allQueriesFailed ? " — every gh query failed; is `gh` installed and authenticated?" : "") +
+        `\nIf the branch has no PR yet, run: cd <repo> && review --local <base-branch>`
+    );
+  }
+
+  log(
+    "INFO",
+    `\u2713 ${branch} \u2192 ${pr.nameWithOwner}#${pr.number} (${pr.state.toLowerCase()}) \u2014 ${pr.title}`
+  );
+  if (others.length) {
+    console.log("  Other PRs on this branch:");
+    for (const o of others) {
+      console.log(`    ${o.url} (${o.state.toLowerCase()})`);
+    }
+  }
+  return pr.url;
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
@@ -1245,6 +1312,7 @@ async function main() {
     console.log(
       "  node src/generate.js https://github.com/owner/repo/pull/123"
     );
+    console.log("  node src/generate.js <branch-name>");
     console.log("  node src/generate.js --local [base-branch]");
     console.log("  node src/generate.js --diff path/to/file.patch");
     console.log("\nFlags:");
@@ -1258,6 +1326,8 @@ async function main() {
     prData = fetchLocalDiff(args[1] || "main");
   } else if (args[0] === "--diff") {
     prData = readDiffFile(args[1]);
+  } else if (looksLikeBranchName(args[0])) {
+    prData = await fetchPRData(await resolveBranchArg(args[0]));
   } else {
     prData = await fetchPRData(args[0]);
   }
@@ -1289,14 +1359,16 @@ async function main() {
   }
 
   const forceRegenerate = args.includes("--force");
+  const cachedProvider = cached?.meta?.aiProvider || "claude";
+  const providerMatches = cachedProvider === AI_PROVIDER;
   let walkthrough;
 
-  if (cached && !forceRegenerate && prData.headSha && cached.meta?.headSha === prData.headSha) {
+  if (cached && providerMatches && !forceRegenerate && prData.headSha && cached.meta?.headSha === prData.headSha) {
     // Same SHA — reuse walkthrough, just refresh comments/reviews/git history
     console.log(`\n✓ Cache hit — SHA ${prData.headSha.slice(0, 7)} unchanged`);
     console.log("  Refreshing comments and reviews...");
     walkthrough = cached.walkthrough;
-  } else if (cached && !forceRegenerate && cached.meta?.headBranch === prData.headBranch) {
+  } else if (cached && providerMatches && !forceRegenerate && cached.meta?.headBranch === prData.headBranch) {
     // Same branch, different SHA — try incremental
     const oldShaFull = cached.meta.headSha;
     const newShaFull = prData.headSha;
@@ -1329,6 +1401,8 @@ async function main() {
   } else {
     if (cached && forceRegenerate) {
       console.log("\n⟳ --force flag set, regenerating from scratch...");
+    } else if (cached && !providerMatches) {
+      console.log(`\n⟳ AI provider changed (${cachedProvider} → ${AI_PROVIDER}), regenerating from scratch...`);
     }
     walkthrough = await generateWalkthrough(prData);
   }
@@ -1349,6 +1423,7 @@ async function main() {
       deletions: prData.deletions,
       changedFiles: prData.changedFiles,
       generatedAt: new Date().toISOString(),
+      aiProvider: AI_PROVIDER,
     },
     walkthrough,
     diff: prData.diff,
@@ -1375,7 +1450,7 @@ async function main() {
   const pendingCount = (walkthrough.review_tips || []).filter(
     (t) => typeof t === "object" && t.pending
   ).length;
-  if (pendingCount > 0 && (process.env.ANTHROPIC_API_KEY || loadEnvKey())) {
+  if (pendingCount > 0 && (AI_PROVIDER === "codex" || process.env.ANTHROPIC_API_KEY || loadEnvKey())) {
     // Use the user's original cwd (where `review` was invoked). bin/review cd's
     // into REVIEW_TOOL_DIR before spawning us but preserves the original here.
     const repoPath = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
