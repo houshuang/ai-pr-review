@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { validateWalkthrough, validatePatch } from "../src/walkthrough-schema.js";
+import { validateWalkthrough, validatePatch, diffInventory } from "../src/walkthrough-schema.js";
 
 const diff = `diff --git a/a.js b/a.js
 index 1111111..2222222 100644
@@ -20,6 +20,11 @@ index 0000000..3333333
 `;
 const walkthrough = () => ({ title: "Title", subtitle: "Subtitle", overview: "Overview", architecture_diagram: "", sections: [{ id: "values", title: "Change values", narrative: "Explain", diagram: null,
   hunks: [{ file: "a.js", startLine: 1, endLine: 2, annotation: "Changes value", importance: "important" }], callouts: [] }], file_map: [{ path: "a.js", description: "Changes value", is_new: false }], review_tips: [] });
+
+test("large raw diff hunks do not overflow the validator's call stack", () => {
+  const large = `diff --git a/large.js b/large.js\nnew file mode 100644\n--- /dev/null\n+++ b/large.js\n@@ -0,0 +1,150000 @@\n${"+a\n".repeat(150000)}`;
+  assert.deepEqual(diffInventory(large)[0].ranges, [{ start: 1, end: 150000 }]);
+});
 
 test("file coverage is derived from diff, including unnarrated new files", () => {
   const result = validateWalkthrough(walkthrough(), diff);

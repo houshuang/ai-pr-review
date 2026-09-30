@@ -56,8 +56,13 @@ export function diffInventory(diff) {
     path: file.isDeleted ? file.oldName : file.newName,
     isNew: Boolean(file.isNew), isDeleted: Boolean(file.isDeleted),
     ranges: file.blocks.map((block) => {
-      const numbers = block.lines.map((line) => file.isDeleted ? line.oldNumber : line.newNumber).filter(Number.isInteger);
-      return { start: numbers.length ? Math.min(...numbers) : block.newStartLine, end: numbers.length ? Math.max(...numbers) : block.newStartLine };
+      let start = Infinity, end = -Infinity;
+      for (const line of block.lines) {
+        const number = file.isDeleted ? line.oldNumber : line.newNumber;
+        if (Number.isInteger(number)) { start = Math.min(start, number); end = Math.max(end, number); }
+      }
+      const fallback = file.isDeleted ? block.oldStartLine : block.newStartLine;
+      return { start: start === Infinity ? fallback : start, end: end === -Infinity ? fallback : end };
     }),
   }));
 }
