@@ -187,6 +187,28 @@ test("timeouts escalate to SIGKILL, wait for exit, and clean temporary files", a
   } finally { fake.cleanup(); }
 });
 
+test("timeout kills descendants even when they close their inherited output pipes", async () => {
+  const fake = fakeCodex(`
+    import('node:child_process').then(({spawn}) => {
+      const descendant = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{});setInterval(()=>{},100)"], {stdio:'ignore'});
+      fs.writeFileSync(process.env.DESCENDANT_PID, String(descendant.pid));
+      setInterval(()=>{},100);
+    });`);
+  const pidPath = join(fake.dir, "descendant.pid");
+  let pid;
+  try {
+    await assert.rejects(fake.run({ timeoutMs: 1000, killGraceMs: 50,
+      env: { PATH: fake.dir, DESCENDANT_PID: pidPath } }), /timed out/);
+    pid = Number(readFileSync(pidPath, "utf8"));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    pid ||= existsSync(pidPath) ? Number(readFileSync(pidPath, "utf8")) : null;
+    if (pid) try { process.kill(pid, "SIGKILL"); } catch {}
+    fake.cleanup();
+  }
+});
+
 test("abort kills active child and already aborted signals never start a child", async () => {
   const fake = fakeCodex(`process.stderr.write("ready"); setInterval(() => {}, 100);`);
   try {

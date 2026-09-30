@@ -254,6 +254,7 @@ export async function runCodex({
       child.on("error", (err) => { spawnError = err; });
       child.stdin.on("error", (err) => stop(new Error(`Could not send prompt to Codex: ${err.message}`)));
       child.on("close", (code) => {
+        if (stopError && grouped) kill("SIGKILL");
         clearTimeout(timer);
         clearTimeout(killTimer);
         signal?.removeEventListener("abort", abort);
