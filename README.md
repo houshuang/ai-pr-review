@@ -24,7 +24,7 @@ cp .env.example .env   # for Claude: put your Anthropic API key in .env
 ./bin/review https://github.com/owner/repo/pull/123
 ```
 
-The first run asks whether Claude or Codex should generate walkthroughs by default and saves the answer (see [Choosing the AI provider](#choosing-the-ai-provider)). It then fetches the PR, generates the walkthrough, starts a local viewer on http://localhost:5200 and opens it in your browser. Generation takes about a minute for a small PR and several minutes for a large one; later runs on the same commit reuse the cached walkthrough.
+The first run asks whether Claude or Codex should generate walkthroughs by default and saves the answer (see [Choosing the AI provider](#choosing-the-ai-provider)). It then fetches the PR, generates the walkthrough, starts a local viewer on http://localhost:5200 and opens it in your browser. Generation time depends on the model and PR size. Later runs reuse the walkthrough when its input, revision and model configuration match the cache.
 
 ### Requirements
 
@@ -33,7 +33,7 @@ The first run asks whether Claude or Codex should generate walkthroughs by defau
 - [GitHub CLI](https://cli.github.com/) (`gh auth login`)
 - At least one provider:
   - Claude: an Anthropic API key (`export ANTHROPIC_API_KEY=sk-ant-...` or add it to `.env`)
-  - Codex: the [Codex CLI](https://github.com/openai/codex), installed and logged in (`codex login`)
+  - Codex: the [Codex CLI](https://github.com/openai/codex), installed and logged in (`codex login`). It is required for automatic review-tip checks, including Claude-generated walkthroughs. Use a current CLI with `--ignore-user-config`, `--output-schema` and the feature flags described below.
 
 ## How it works
 
@@ -73,11 +73,11 @@ The first run asks whether Claude or Codex should generate walkthroughs by defau
                     └─────────────────────┘
 ```
 
-**Generator** (`src/generate.js`) — Fetches everything about the PR via `gh` CLI (diff, commits, file ages, churn, existing comments — all fetched concurrently), builds a rich context, and sends it to Codex or Claude with a detailed prompt. The AI returns structured JSON: narrative sections with annotated code hunks, importance ratings, architecture diagrams, and review tips. The Claude path uses streaming, TCP keepalives, a 15-minute timeout, and 3 automatic retries.
+**Generator** (`src/generate.js`) — Fetches PR metadata, the diff, commit history, file ages, churn and existing comments via `gh`. It checks the base and head revisions again after fetching the diff, retrying if either moved. Codex or Claude produces structured JSON: narrative sections with annotated code hunks, importance ratings, architecture diagrams and review tips. Schema and semantic validation check section identifiers and diff references before publication; file coverage is derived from the actual diff. The Claude path uses streaming, TCP keepalives, a 15-minute timeout and automatic retries.
 
-**Viewer** (Preact SPA) — Renders the walkthrough as an interactive review UI. Diffs are syntax-highlighted and filtered to show only the relevant hunks per section. The Vite dev server proxies GitHub API calls through `gh`, so posting comments and submitting reviews works without managing tokens.
+**Viewer** (Preact SPA) — Renders the walkthrough as an interactive review UI. Diffs are syntax-highlighted and filtered to show the relevant hunks per section. The Vite dev server proxies supported GitHub API calls through `gh`, so posting comments and submitting reviews works without managing tokens. Local endpoints validate origins, request sizes and allowed operations; GitHub commands run asynchronously without a shell.
 
-**AI Chat** — Each section has a chat assistant that answers questions about the code changes, using the provider that generated the walkthrough. The dev server sends it the PR title and overview, the section's narrative, annotations and callouts, and the conversation so far; it does not read the rest of the codebase (the background tip investigation below does).
+**AI Chat** — Each section has a chat assistant using the provider that generated the walkthrough. The server loads the stored walkthrough by slug and generation identity, then supplies the section's narrative, annotations, callouts and actual diff hunks with old/new line numbers. Stale chats are rejected so a newer review cannot silently change their context. Chat sees those hunks and their existing diff context; the background tip checks can inspect the full repository.
 
 ## Features
 
@@ -100,7 +100,7 @@ The first run asks whether Claude or Codex should generate walkthroughs by defau
 - **Clickable file references** — `file.ts:42` references in narratives and annotations scroll to the relevant diff line
 - **Context expansion** — click to load surrounding lines (fetched from GitHub)
 - **Importance levels** — critical, important, supporting, context — so you know what to scrutinize
-- **Stale review detection** — banner warns when the PR has new commits since the walkthrough was generated, listing each new commit (SHA, message, author) and the +/-/file totals so you can decide whether a re-run is worth it. The generator also re-checks the head SHA after fetching the diff and warns if the PR was updated mid-fetch
+- **Stale review detection** — banner warns when the PR has new commits since the walkthrough was generated, listing each new commit (SHA, message, author) and the +/-/file totals so you can decide whether a re-run is worth it. The generator re-checks both base and head after fetching the diff, retries a moving revision up to three times, and fails if it cannot establish a stable snapshot
 - **Complete coverage** — every file in the PR appears, either in narrative sections or in "Remaining Changes"
 
 ### GitHub integration
@@ -118,18 +118,26 @@ The first run asks whether Claude or Codex should generate walkthroughs by defau
 
 ### AI chat
 
-Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions about any section. The chat uses the walkthrough's selected provider with the section narrative, code annotations, and callouts as context. Example questions: "What happens if this check fails?", "Why was this approach chosen over X?"
+Select code in a diff and click **"Ask AI"** (or press `a`) to ask questions about any section. The chat uses the walkthrough's selected provider with the stored section narrative, annotations, callouts and actual diff code as context. Example questions: "What happens if this check fails?", "Why was this approach chosen over X?"
 
 ### Smart generation
 
-- **Large PR handling** — Prioritizes modified/deleted files (they touch existing code), includes smaller new files in full, summarizes large new files
-- **Incremental updates** — When a branch gets new commits, the generator computes the delta diff between the cached head SHA and the new head SHA. Empty delta (force-push of identical content) reuses the cached walkthrough verbatim. Small delta (≤30KB and ≤8 affected files) runs **patch mode**: the selected provider receives only the delta plus the previous walkthrough and returns a JSON patch (`updated_sections`, `added_sections`, `removed_section_ids`, `file_map_changes`, `review_tips`) which is merged programmatically. Larger deltas fall back to full regeneration. Patch-mode failures fall back to full regen automatically
-- **SHA-based caching** — Same SHA = instant reuse, just refreshes comments and reviews
-- **Resilient AI calls** — Claude: streaming responses, TCP keepalive (undici Agent), 15-minute timeout, 3 retries with exponential backoff. Codex: prompt over stdin, 15-minute timeout, the CLI's own error message reported with a fix hint (upgrade, `codex login`, unsupported model). Diagnostics and token counts for both go to `logs/`
-- **Resilient JSON parsing** — if the AI returns malformed JSON, the full response is dumped to `logs/failed-response-<timestamp>.txt` and a two-stage repair pipeline runs (local position-based escape pass, then an AI "fix syntax only" fallback) before the run is failed
-- **Verified review tips** — The AI generates review concerns during the walkthrough; a detached background process (`src/resolve-info-tips.js`) then verifies them so the viewer opens immediately after generation, with spinners on pending tips. Stage 1 classifies every tip against the diff as `verified` (✓, addressed), `concern` (⚠, real issue), or `info` (ℹ, can't tell from diff alone)
-- **Background investigation of info tips** — Stage 2 investigates tips the diff couldn't settle in the actual codebase using the selected provider's read-only tools. The viewer polls the JSON every 4s, auto-updating as each tip resolves with specific `file:line` findings. For URL-based reviews, if the invoking directory isn't a clone of the PR's repo, the resolver shallow-clones the repo at the PR head into `.cache/repos/` (cached across runs) so tips are always investigated against the real code; `--local`/`--diff` mode uses the invoking directory
-- **Hot-loaded walkthroughs** — The dev server reads `public/walkthroughs/*.json` from disk on every request via a custom Vite middleware, so newly generated walkthroughs are picked up without restarting `pnpm dev`
+- **Large PR handling** — Prioritizes modified/deleted files, includes smaller new files in full and summarizes large new files. File size alone does not classify code as generated. When GitHub cannot serve a large diff, the fallback reads a pinned repository snapshot without fetching into your working checkout.
+- **Incremental updates** — A new head on the same branch and base can use a delta against the cached head. For GitHub reviews, only a linear advance is eligible; a rewind or divergent force-push triggers full generation. A small delta (≤30KB and ≤8 affected files) uses **patch mode**: the provider returns section, file-map and tip changes which are merged and validated against the current full diff. An eligible empty delta reuses the narrative. Larger deltas, unavailable comparisons and invalid patches fall back to full generation.
+- **Input-aware caching** — Reuse requires matching input, source provenance, base/head revisions, provider, task model/effort settings and prompt version. Title/body changes also invalidate the cache. Cache hits retain their generation identity and original generation time while refreshing comments and reviews; old caches lacking this metadata regenerate once. `--force` always creates a new generation.
+- **Validated output** — Both providers receive JSON schemas. Local validation rejects duplicate section IDs and references outside the reviewed diff, including checking deleted files against old-side line numbers. Remaining file coverage is derived from the diff rather than trusted to the model. Syntax repair tries a local escape pass, then an AI repair task; failed responses are saved under `logs/`.
+- **Resilient AI calls** — Claude uses streaming, TCP keepalive, a 15-minute timeout and retries with exponential backoff. Codex reads prompts over stdin, parses JSONL events incrementally, bounds diagnostic output, reports failed turns even when the CLI exits successfully, and terminates timed-out or cancelled process groups. CLI setup failures include a fix hint. Chat text arrives when the CLI emits text events; some CLI versions only emit a completed message.
+- **Background review-tip checks** — Review tips are checked automatically after generation; see [Review tips](#review-tips). The viewer opens while these checks run and updates as evidence arrives.
+- **Consistent publication** — Walkthroughs and verdicts use locked, atomic writes. Tip updates are bound to a generation and reviewed revision, so a late worker cannot overwrite a newer walkthrough. Duplicate workers for the same generation are suppressed. Polling retries transient network/JSON failures; a new generation prompts a reload rather than merging results into the old review.
+- **Hot-loaded walkthroughs** — The dev server reads `public/walkthroughs/*.json` from disk on every request, so newly generated walkthroughs appear without restarting `pnpm dev`.
+
+### Review tips
+
+Every review tip is handed to Codex for a full-code investigation, including tips from Claude-generated walkthroughs. Checks use a disposable worktree at the reviewed commit. Codex can inspect the full repository, install required test dependencies and run focused local tests. Up to three tips are checked concurrently. Each has a ten-minute total deadline and at most two Codex turns; a second turn can follow an inconclusive result that did not perform runnable checks. Results include file references and test commands with passed, failed or not-run outcomes and explanations. A static check can complete without a runtime test when its evidence settles the concern and the result explains why a test was unnecessary.
+
+Results distinguish **verified** (the concern is addressed) from **concern** (a concrete issue remains). A check that cannot complete is marked **blocked** and remains unresolved with its reason, without an endless spinner. Blocked checks are retried when you invoke `review` again, including on a walkthrough cache hit. Finishing a check does not mean its concern has been fixed. The checker reports evidence and does not apply fixes to the target PR.
+
+GitHub and `--local` reviews identify exact commits. For `--diff`, the checker creates a worktree at the invoking repository's committed HEAD and applies the stored patch if it applies cleanly, or accepts it as already present if a reverse check succeeds. This is best-effort reconstruction: the original patch base remains unknown and the evidence records that weaker provenance. If neither check succeeds, investigation is blocked. Repository snapshots, investigation worktrees and logs stay under this tool's local cache/output directories.
 
 ## Usage
 
@@ -164,7 +172,7 @@ rest are printed so you can rerun with an explicit URL.
 ### From a local branch
 
 ```bash
-# Compare current branch against main
+# Compare committed HEAD against main (uncommitted changes are excluded)
 ./bin/review --local
 
 # Compare against a specific base branch
@@ -176,6 +184,8 @@ rest are printed so you can rerun with an explicit URL.
 ```bash
 ./bin/review --diff path/to/changes.patch
 ```
+
+Relative patch paths resolve from the directory where you invoke `review`. Patch cache identity includes the absolute path and content.
 
 ### Open the viewer without generating
 
@@ -198,10 +208,12 @@ The slug is printed at the end of generation (`Slug: owner-repo-123`). You can a
 
 ## Choosing the AI provider
 
-Walkthrough generation, tip verification and investigation, and section chat all run on one provider:
+Choose the provider for walkthrough generation, patching, syntax repair and section chat:
 
 - **Claude** — the Anthropic API, billed to your API key.
-- **Codex** — the Codex CLI in a read-only, ephemeral sandbox, on whatever account `codex login` uses.
+- **Codex** — the Codex CLI on the account used by `codex login`, with explicit model and effort settings.
+
+Automatic review-tip investigations always use Codex with the full code, regardless of this choice.
 
 The first time `review` generates a walkthrough it asks which one to use by default and saves the answer to `${XDG_CONFIG_HOME:-~/.config}/ai-pr-review/config.json`. Every run prints one line saying which provider it is using and how to change it.
 
@@ -221,13 +233,50 @@ A walkthrough records the provider that generated it: its chat uses the same pro
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key, needed for Claude | — |
 | `REVIEW_AI_PROVIDER` | `claude` or `codex`; overrides the saved default | saved default |
-| `REVIEW_MODEL` | Claude model for generation, tip investigation, and chat (e.g. `claude-sonnet-5` for cheaper runs) | `claude-opus-5-5` |
-| `REVIEW_CODEX_MODEL` | Codex model override | Codex CLI config |
+| `REVIEW_CODEX_MODEL` | Model override for Codex tasks | `gpt-6.1-sol` |
+| `REVIEW_CODEX_EFFORT` | Effort override for Codex tasks | task default below |
+| `REVIEW_CLAUDE_MODEL` | Model override for Claude tasks, including repair | task default below |
+| `REVIEW_CLAUDE_EFFORT` | Effort override for Claude tasks that support it | task default below |
+| `REVIEW_MODEL` | Legacy Claude model override, excluding repair | `claude-opus-5-5` |
+| `REVIEW_<PROVIDER>_<TASK>_MODEL` | Override one task's model, e.g. `REVIEW_CODEX_CHAT_MODEL` | provider/task default |
+| `REVIEW_<PROVIDER>_<TASK>_EFFORT` | Override one task's effort, e.g. `REVIEW_CODEX_INVESTIGATION_EFFORT` | task default |
+| `REVIEW_TIP_TIMEOUT_MS` | Total deadline per full-code tip check, from 1,000 to 1,800,000 ms | `600000` (10 minutes) |
 | `REVIEW_PORT` | Dev server port | `5200` |
 
-For Claude, copy `.env.example` to `.env` and add your key, or set it as an environment variable. Only the key is read from `.env`; the other variables come from the shell environment.
+`PROVIDER` is `CODEX` or `CLAUDE`. Active tasks are `GENERATION`, `PATCH`, `INVESTIGATION`, `CHAT` and `REPAIR`; the configuration helper also accepts legacy `VERIFICATION`, but automatic tips use `INVESTIGATION`. A task override beats its provider-wide override. For Claude, `REVIEW_CLAUDE_MODEL` then beats legacy `REVIEW_MODEL`; legacy `REVIEW_MODEL` does not select the repair model.
 
-Generating a walkthrough makes one AI call, then a background pass that verifies the review tips (and investigates those the diff cannot settle). Reusing a cached walkthrough, or just opening the viewer, makes no AI calls; chat makes one per message. Walkthroughs, the repo clones used for tip investigation (`.cache/`) and logs (`logs/`) stay on your machine.
+| Task | Codex default | Claude default |
+|------|---------------|----------------|
+| Generation, patch | `gpt-6.1-sol`, medium effort | `claude-opus-5-5`, medium effort |
+| Automatic tip investigation | `gpt-6.1-sol`, high effort | Uses Codex |
+| Section chat | `gpt-6.1-sol`, low effort | `claude-opus-5-5`, low effort |
+| Syntax repair | `gpt-6.1-sol`, medium effort | `claude-haiku-4-5-20251001`, no effort parameter |
+
+Claude Opus uses its adaptive thinking behavior with the requested effort. Codex effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `ultra`; `gpt-6.1-sol` requires `low` or higher. Claude effort values are `low`, `medium`, `high`, `xhigh` or `max`. A model override must support the selected effort and structured output; syntax validation of the setting does not establish model availability in your account.
+
+```bash
+# Keep generation balanced and give full-code checks more reasoning
+REVIEW_CODEX_GENERATION_EFFORT=medium REVIEW_CODEX_INVESTIGATION_EFFORT=high \
+  ./bin/review https://github.com/owner/repo/pull/123 --codex
+
+# Override only Claude's walkthrough model
+REVIEW_CLAUDE_GENERATION_MODEL=claude-sonnet-5-5 \
+  ./bin/review https://github.com/owner/repo/pull/123 --claude
+```
+
+These defaults allocate less reasoning to section chat and more to repository investigation. They have not been established as the fastest or highest-quality choice by a comparative live-model benchmark.
+
+For Claude, copy `.env.example` to `.env` and add your key, or set it as an environment variable. Only the key is read from `.env`; other settings come from the shell environment.
+
+### Codex execution
+
+The runner sets an explicit model/effort, uses `--ephemeral`, ignores user config with `--ignore-user-config`, disables hooks/plugins/apps and skips host skill discovery. Review data and source code are treated as untrusted context. Project instruction loading is disabled for review tasks. Generation, patching, chat and repair disable shell tools; repository investigations use a workspace-write sandbox so Codex can install dependencies and run tests in the disposable worktree, with network access for dependency setup. The investigation instructions require evidence gathering and forbid source fixes or remote writes. Authentication still comes from your existing Codex login. Managed or administrator configuration may still apply; these flags are not a guarantee of isolation from all host policy.
+
+Use a current CLI supporting `--ignore-user-config`, `--output-schema`, and the `hooks`, `plugins`, `apps`, `skip_host_skill_discovery`, `shell_tool` and `shell_snapshot` feature flags. An unsupported flag fails with an upgrade hint instead of silently falling back to inherited configuration.
+
+### Calls and local data
+
+A generation normally makes one walkthrough call, followed by background Codex checks for its tips; incremental updates, syntax repair and retries may add calls. A matching cache avoids fresh walkthrough generation but may resume pending or blocked tip checks. Opening an existing viewer alone makes no AI calls; section chat invokes its recorded provider per message. Walkthroughs (`public/walkthroughs/`), repository/worktree caches (`.cache/`) and diagnostic logs (`logs/`) stay on your machine. GitHub comments and reviews are posted only when you submit them in the viewer.
 
 ## Project structure
 
@@ -236,11 +285,19 @@ bin/review              CLI entry point (bash)
 src/
   generate.js           Walkthrough generator — fetches PR data, calls the selected AI
   ai-provider.js        Codex CLI runner shared by generation, tips and chat
+  models.js             Explicit model/effort defaults and per-task overrides
+  walkthrough-schema.js JSON schemas, semantic validation and derived coverage
+  cache-policy.js       Input and configuration cache identity
+  local-input.js        Committed local diffs and invoking-directory patch paths
   provider-config.js    Provider choice: flags, env, saved default, first-run prompt
   resolve-branch.js     Resolves a bare branch name to its PR
-  resolve-info-tips.js  Background resolver — investigates unresolved review tips
-                        in the target repo using read-only AI tools, rewrites JSON
-                        in place as each tip resolves
+  resolve-info-tips.js  Background Codex review-tip checks
+  repo-snapshot.js      Exact-revision repository snapshots and private worktrees
+  review-storage.js     Locked atomic writes and generation-bound tip updates
+  chat-context.js       Stored section narrative and actual code context
+  server-chat.js        Provider-bound chat and response streaming
+  server-http.js        Validated local endpoints and asynchronous gh commands
+  walkthrough-poll.js   Resilient polling bound to one generation
   export-static.js      Static HTML export
   app.jsx               Preact entry point
   state.js              Reactive state management (Preact Signals)
