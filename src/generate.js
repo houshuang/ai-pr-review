@@ -995,10 +995,14 @@ function computeDeltaDiff(prData, oldSha) {
   // local mode
   try {
     const repoCwd = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
+    execFileSync("git", ["merge-base", "--is-ancestor", oldSha, prData.headSha], {
+      cwd: repoCwd, timeout: 30000, stdio: "pipe",
+    });
     return execFileSync("git", ["diff", oldSha, prData.headSha], {
       encoding: "utf-8",
       maxBuffer: 50 * 1024 * 1024,
       cwd: repoCwd,
+      timeout: 30000,
     });
   } catch (e) {
     log("WARN", `Local git diff failed (${e.message.split("\n")[0]}). Falling back to full regen.`);
@@ -1336,8 +1340,10 @@ async function main() {
   if (existsSync(perPrPath)) {
     try {
       cached = JSON.parse(readFileSync(perPrPath, "utf-8"));
+      validateWalkthrough(cached.walkthrough, cached.diff);
     } catch {
-      log("INFO", "Cached file exists but failed to parse, will regenerate");
+      cached = null;
+      log("INFO", "Cached walkthrough is invalid, will regenerate");
     }
   }
 
