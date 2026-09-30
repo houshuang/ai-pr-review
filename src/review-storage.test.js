@@ -89,3 +89,33 @@ test("generation replaces malformed prior cache JSON", async (t) => {
   await writeReviewFile(path, content);
   assert.deepEqual(JSON.parse(await readFile(path, "utf8")), content);
 });
+
+test("full-code lifecycle upgrades legacy tips, retries blocked checks, and never reopens completed investigations", async (t) => {
+  const { path, meta } = await fixture(t);
+  await updateReviewTip(path, meta, "tip 0", { status: "verified", resolved: true, pending: false });
+  const start = { status: "info", pending: true, investigationState: "running" };
+  assert.equal(await updateReviewTip(path, meta, "tip 0", start, { startInvestigation: true }), true);
+  await updateReviewTip(path, meta, "tip 0", { status: "info", investigationState: "blocked", pending: false, resolved: false });
+  assert.equal(await updateReviewTip(path, meta, "tip 0", start, { startInvestigation: true }), true);
+  await updateReviewTip(path, meta, "tip 0", { status: "concern", investigationState: "complete", pending: false, resolved: true });
+  assert.equal(await updateReviewTip(path, meta, "tip 0", start, { startInvestigation: true }), false);
+});
+
+test("cache retry queues unchanged eligible results before viewer startup and preserves concurrent progress", async (t) => {
+  const { path, meta, content } = await fixture(t);
+  await updateReviewTip(path, meta, "tip 0", { status: "info", investigationState: "blocked", resolved: false, pending: false, finding: "temporary outage" });
+  let latest = JSON.parse(await readFile(path, "utf8"));
+  const previous = structuredClone(latest.walkthrough.review_tips[0]);
+  latest.walkthrough.review_tips[0].pending = true;
+  await writeReviewFile(path, latest, { retryTips: [previous] });
+  assert.equal(JSON.parse(await readFile(path, "utf8")).walkthrough.review_tips[0].pending, true);
+  await updateReviewTip(path, meta, "tip 0", { status: "concern", investigationState: "complete", resolved: true, pending: false, finding: "full-code result" });
+  await writeReviewFile(path, latest, { retryTips: [previous] });
+  assert.equal(JSON.parse(await readFile(path, "utf8")).walkthrough.review_tips[0].finding, "full-code result");
+  assert.equal(JSON.parse(await readFile(path, "utf8")).walkthrough.review_tips[0].pending, undefined);
+  await updateReviewTip(path, meta, "tip 1", { status: "verified", resolved: true, pending: false, finding: "legacy diff result" });
+  const oldLegacy = JSON.parse(await readFile(path, "utf8")).walkthrough.review_tips[1];
+  content.walkthrough.review_tips[1] = { ...oldLegacy, pending: true };
+  await writeReviewFile(path, content, { retryTips: [oldLegacy] });
+  assert.equal(JSON.parse(await readFile(path, "utf8")).walkthrough.review_tips[1].pending, true);
+});

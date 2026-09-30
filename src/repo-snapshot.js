@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, realpathSync } from "node:fs";
+import { mkdirSync, existsSync, realpathSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireFileLock } from "./review-storage.js";
@@ -49,4 +50,63 @@ export async function ensureRepoSnapshot(meta, invokingPath, cacheDir = defaultC
 export async function ensureGitHubSnapshot(meta, cacheDir = defaultCache) {
   if (!meta.owner || !meta.repo || !meta.number) throw new Error("GitHub identity is required");
   return (await ensureRepoSnapshot(meta, null, cacheDir)).path;
+}
+
+export async function createInvestigationWorkspace(meta, invokingPath, cacheDir = defaultCache, { diff = "", remoteUrl } = {}) {
+  const unpinned = !meta.headSha;
+  const pinnedMeta = unpinned ? { ...meta, headSha: git(["rev-parse", "HEAD"], invokingPath) } : meta;
+  const snapshot = await ensureRepoSnapshot(pinnedMeta, invokingPath, cacheDir, { remoteUrl });
+  const common = git(["rev-parse", "--git-common-dir"], snapshot.path);
+  const objects = resolve(snapshot.path, common);
+  const root = dirname(objects);
+  const scratchRoot = resolve(root, "investigations");
+  mkdirSync(scratchRoot, { recursive: true });
+  const path = resolve(scratchRoot, randomUUID());
+  const locked = async (action) => {
+    const release = await acquireFileLock(resolve(root, "snapshot.lock"), { timeoutMs: 150000 });
+    if (!release) throw new Error("Timed out waiting for investigation worktree maintenance");
+    try { return action(); } finally { await release(); }
+  };
+  const ownerPath = `${path}.owner`;
+  await locked(() => {
+    for (const name of readdirSync(scratchRoot).filter((name) => /^[a-f0-9-]+\.owner$/.test(name))) {
+      const marker = resolve(scratchRoot, name);
+      const pid = Number(readFileSync(marker, "utf8"));
+      if (!Number.isInteger(pid) || pid < 1) continue;
+      try { process.kill(pid, 0); }
+      catch (error) {
+        if (error.code !== "ESRCH") continue;
+        const abandoned = marker.slice(0, -6);
+        if (existsSync(abandoned)) git(["worktree", "remove", "--force", abandoned], objects);
+        unlinkSync(marker);
+      }
+    }
+    writeFileSync(ownerPath, String(process.pid), { flag: "wx" });
+    try { git(["worktree", "add", "--detach", path, pinnedMeta.headSha], objects); }
+    catch (error) { unlinkSync(ownerPath); throw error; }
+  });
+  const cleanup = () => locked(() => {
+    git(["worktree", "remove", "--force", path], objects);
+    unlinkSync(ownerPath);
+  });
+  let provenance = snapshot.provenance;
+  try {
+    if (unpinned) {
+      if (!diff.trim()) throw new Error("Patch has no diff to reconstruct in a worktree");
+      const apply = (args) => execFileSync("git", ["apply", ...args, "-"], { ...options, cwd: path, input: diff, stdio: ["pipe", "pipe", "pipe"] });
+      try {
+        apply(["--check"]);
+        apply([]);
+        provenance = `patch applied to invoking committed HEAD ${pinnedMeta.headSha}; original patch base is unknown`;
+      } catch (forwardError) {
+        try { apply(["--reverse", "--check"]); }
+        catch { throw new Error(`Patch cannot be reconstructed against invoking committed HEAD: ${forwardError.stderr?.toString().trim() || forwardError.message}`); }
+        provenance = `invoking committed HEAD ${pinnedMeta.headSha} already contains patch; original patch base is unknown`;
+      }
+    }
+    return { path, provenance, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 }

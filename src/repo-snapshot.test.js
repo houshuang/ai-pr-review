@@ -66,3 +66,48 @@ test("read tool refuses symlinks outside the repository, including prefix-siblin
   assert.throws(() => safeRepoPath(repo, "../source-sibling/secret"), /escapes repo/);
   assert.equal(safeRepoPath(repo, "code.txt"), realpathSync(join(repo, "code.txt")));
 });
+
+test("test workspaces are independently writable at the recorded SHA and cleanup leaves canonical evidence intact", async (t) => {
+  const { repo, oldSha, cache } = fixture(t);
+  const meta = { source: "local", headSha: oldSha };
+  const snapshot = await ensureRepoSnapshot(meta, repo, cache);
+  const { createInvestigationWorkspace } = await import("./repo-snapshot.js");
+  const workspaces = await Promise.all([createInvestigationWorkspace(meta, repo, cache), createInvestigationWorkspace(meta, repo, cache)]);
+  assert.notEqual(workspaces[0].path, workspaces[1].path);
+  writeFileSync(join(workspaces[0].path, "code.txt"), "temporary test alteration");
+  writeFileSync(join(workspaces[0].path, "generated.tmp"), "test output");
+  assert.equal(readFileSync(join(workspaces[1].path, "code.txt"), "utf8"), "reviewed commit\n");
+  assert.equal(readFileSync(join(snapshot.path, "code.txt"), "utf8"), "reviewed commit\n");
+  for (const workspace of workspaces) await workspace.cleanup();
+  assert.equal(readFileSync(join(repo, "code.txt"), "utf8"), "dirty invoking checkout\n");
+  const gitList = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: snapshot.path, encoding: "utf8" });
+  assert.equal(gitList.includes("/investigations/"), false);
+});
+
+test("patch workspaces reconstruct forward patches or recognize already applied patches without changing the invoking checkout", async (t) => {
+  const { repo, cache } = fixture(t);
+  const { createInvestigationWorkspace } = await import("./repo-snapshot.js");
+  const diff = "diff --git a/code.txt b/code.txt\n--- a/code.txt\n+++ b/code.txt\n@@ -1 +1 @@\n-newer commit\n+patched commit\n";
+  const forward = await createInvestigationWorkspace({ source: "file" }, repo, cache, { diff });
+  assert.equal(readFileSync(join(forward.path, "code.txt"), "utf8"), "patched commit\n");
+  assert.match(forward.provenance, /original patch base is unknown/);
+  await forward.cleanup();
+  const reverse = await createInvestigationWorkspace({ source: "file" }, repo, cache, { diff: diff.replace("-newer commit\n+patched commit", "-old commit\n+newer commit") });
+  assert.match(reverse.provenance, /already contains patch/);
+  await reverse.cleanup();
+  await assert.rejects(createInvestigationWorkspace({ source: "file" }, repo, cache, { diff: diff.replace("-newer commit", "-unrelated") }), /cannot be reconstructed/);
+  assert.equal(readFileSync(join(repo, "code.txt"), "utf8"), "dirty invoking checkout\n");
+});
+
+test("a later investigation reclaims only scratch worktrees abandoned by a dead resolver", async (t) => {
+  const { repo, oldSha, cache } = fixture(t);
+  const { createInvestigationWorkspace } = await import("./repo-snapshot.js");
+  const meta = { source: "local", headSha: oldSha };
+  const abandoned = await createInvestigationWorkspace(meta, repo, cache);
+  writeFileSync(`${abandoned.path}.owner`, "2147483647");
+  const live = await createInvestigationWorkspace(meta, repo, cache);
+  const gitList = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: live.path, encoding: "utf8" });
+  assert.equal(gitList.includes(abandoned.path), false);
+  assert.equal(gitList.includes(live.path), true);
+  await live.cleanup();
+});

@@ -1,6 +1,7 @@
 import { readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID, createHash } from "node:crypto";
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,15 +94,25 @@ async function withWriter(path, action) {
   try { return await action(); } finally { await release(); }
 }
 
-export async function writeReviewFile(path, content) {
+export function shouldInvestigateTip(tip) {
+  return typeof tip === "string" || (tip && typeof tip.tip === "string" && tip.investigationState !== "complete");
+}
+
+export async function writeReviewFile(path, content, { retryTips = [] } = {}) {
   return withWriter(path, async () => {
     let latest;
     try { latest = JSON.parse(await readFile(path, "utf8")); }
     catch (error) { if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error; }
     const next = structuredClone(content);
     if (sameReview(latest?.meta, next.meta)) {
-      const terminal = new Map((latest.walkthrough?.review_tips || []).filter((tip) => tip.resolved && !tip.pending).map((tip) => [tip.tip, tip]));
-      if (Array.isArray(next.walkthrough?.review_tips)) next.walkthrough.review_tips = next.walkthrough.review_tips.map((tip) => tip.pending && terminal.has(tip.tip) ? terminal.get(tip.tip) : tip);
+      const terminal = new Map((latest.walkthrough?.review_tips || []).filter((tip) => tip.investigationState || (tip.resolved && !tip.pending)).map((tip) => [tip.tip, tip]));
+      const retries = new Map(retryTips.map((tip) => [typeof tip === "string" ? tip : tip.tip, tip]));
+      if (Array.isArray(next.walkthrough?.review_tips)) next.walkthrough.review_tips = next.walkthrough.review_tips.map((tip) => {
+        const latestTip = terminal.get(tip.tip);
+        if (!latestTip) return tip;
+        if (tip.pending && shouldInvestigateTip(latestTip) && retries.has(tip.tip) && isDeepStrictEqual(latestTip, retries.get(tip.tip))) return tip;
+        return latestTip;
+      });
     }
     return publish(path, next);
   });
@@ -114,7 +125,7 @@ export function sameReview(meta, expected) {
   );
 }
 
-export async function updateReviewTip(path, expectedMeta, original, resolved) {
+export async function updateReviewTip(path, expectedMeta, original, resolved, { startInvestigation = false } = {}) {
   return withWriter(path, async () => {
     let content;
     try { content = JSON.parse(await readFile(path, "utf8")); }
@@ -123,10 +134,10 @@ export async function updateReviewTip(path, expectedMeta, original, resolved) {
     const tips = content?.walkthrough?.review_tips;
     if (!Array.isArray(tips)) return false;
     const text = typeof original === "string" ? original : original.tip;
-    const index = tips.findIndex((tip) => tip?.tip === text && tip.pending);
+    const index = tips.findIndex((tip) => (typeof tip === "string" ? tip : tip?.tip) === text && (tip.pending || (startInvestigation && shouldInvestigateTip(tip))));
     if (index < 0) return false;
     if (!["verified", "concern", "info"].includes(resolved.status)) throw new Error("Invalid tip status");
-    tips[index] = { ...tips[index], ...resolved };
+    tips[index] = { ...(typeof tips[index] === "string" ? { tip: tips[index] } : tips[index]), ...resolved };
     if (!resolved.pending) delete tips[index].pending;
     await publish(path, content);
     return true;
