@@ -134,12 +134,13 @@ function codexFailure(code, stderr, prompt, eventFailure) {
   return err;
 }
 
-/** Run a read-only, ephemeral task, preserving CLI auth but ignoring user config. */
+/** Run an ephemeral task, preserving CLI auth but ignoring user config. */
 export async function runCodex({
   systemPrompt,
   userPrompt,
   cwd = process.cwd(),
   task = "generation",
+  sandbox = "read-only",
   model,
   effort,
   ignoreProjectInstructions = true,
@@ -153,6 +154,8 @@ export async function runCodex({
   env = process.env,
 }) {
   if (signal?.aborted) throw new Error("Codex run aborted");
+  if (!["read-only", "workspace-write"].includes(sandbox)) throw new Error(`Unsupported Codex sandbox: ${sandbox}`);
+  if (sandbox === "workspace-write" && task !== "investigation") throw new Error("Writable sandbox is only available for investigation");
   const stage = `REVIEW_CODEX_${task.toUpperCase()}`;
   const config = getTaskConfig("codex", task, {
     ...env,
@@ -164,7 +167,7 @@ export async function runCodex({
   const workDir = resolve(cwd);
   const args = [
     "exec", "--ephemeral", "--json", "--color", "never",
-    "--sandbox", "read-only", "--skip-git-repo-check",
+    "--sandbox", sandbox, "--skip-git-repo-check",
     "--ignore-user-config", "--output-last-message", outputPath,
     "--model", config.model,
     "-c", `model_reasoning_effort=${JSON.stringify(config.effort)}`,
@@ -172,6 +175,9 @@ export async function runCodex({
     "--disable", "hooks", "--disable", "plugins", "--disable", "apps",
     "--enable", "skip_host_skill_discovery",
   ];
+  if (sandbox === "workspace-write") {
+    args.push("-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=true");
+  }
   if (task !== "investigation") args.push("--disable", "shell_tool", "--disable", "shell_snapshot");
   // Untrusted roots skip project .codex layers. Keep CODEX_HOME for existing auth.
   let root = workDir;
@@ -196,7 +202,7 @@ export async function runCodex({
     await new Promise((resolvePromise, reject) => {
       const grouped = process.platform !== "win32";
       const child = spawn("codex", args, {
-        cwd: workDir, env, stdio: ["pipe", "pipe", "pipe"], detached: grouped,
+        cwd: workDir, env: { ...env, TMPDIR: tempDir, TMP: tempDir, TEMP: tempDir }, stdio: ["pipe", "pipe", "pipe"], detached: grouped,
       });
       const kill = (signal) => {
         if (grouped && child.pid) {
