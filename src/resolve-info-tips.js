@@ -8,9 +8,8 @@
  *             Tips that resolve as verified/concern are finalized.
  *   Stage 2 — tips the diff alone couldn't settle are investigated in the
  *             actual codebase with tool use (grep/read_file/list_files).
- *             For GitHub PRs, if the invoking directory isn't a clone of the
- *             PR's repo, a shallow clone at the PR head is created/reused
- *             under .cache/repos/.
+ *             For GitHub PRs and local branches, a committed snapshot at the
+ *             recorded head SHA is created/reused under .cache/repos/.
  *
  * As each tip resolves, the JSON is rewritten in place so the viewer's
  * polling loop picks up the update.
@@ -19,15 +18,17 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, appendFileSync, mkdirSync, statSync } from "fs";
 import { execFileSync } from "child_process";
-import { resolve, dirname, relative, join } from "path";
+import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { GENERATION_MODEL } from "./models.js";
+import { getTaskConfig } from "./models.js";
+import { acquireFileLock, updateReviewTip, sameReview } from "./review-storage.js";
+import { ensureRepoSnapshot, safeRepoPath } from "./repo-snapshot.js";
 import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const AI_PROVIDER = resolveAIProvider();
+let AI_PROVIDER;
 
 const LOG_DIR = resolve(__dirname, "..", "logs");
 mkdirSync(LOG_DIR, { recursive: true });
@@ -53,7 +54,10 @@ function loadEnvKey() {
   return null;
 }
 
-const MAX_TOOL_ROUNDS = 50;
+const MAX_TOOL_ROUNDS = 12;
+const MAX_INVESTIGATION_MS = 5 * 60 * 1000;
+const VERDICT_SCHEMA = { type: "object", properties: { status: { type: "string", enum: ["verified", "concern", "info"] }, finding: { type: "string" } }, required: ["status", "finding"], additionalProperties: false };
+const validVerdict = (value) => ["verified", "concern", "info"].includes(value?.status) && typeof value.finding === "string" && value.finding.trim().length > 0;
 const MAX_CONCURRENCY = 3;
 // A Codex failure that is about setup (old CLI, unusable model, not logged in)
 // will hit every remaining tip identically. Latch it on the first occurrence so
@@ -107,15 +111,6 @@ const TOOLS = [
   },
 ];
 
-function safePath(repoPath, userPath) {
-  const abs = resolve(repoPath, userPath);
-  const rel = relative(repoPath, abs);
-  if (rel.startsWith("..") || rel.startsWith("/")) {
-    throw new Error(`Path escapes repo: ${userPath}`);
-  }
-  return abs;
-}
-
 function runGrep(repoPath, pattern, path) {
   const args = ["grep", "-nI", "--max-count=10", "-P", "-e", pattern];
   if (path) args.push("--", path);
@@ -140,13 +135,14 @@ function runGrep(repoPath, pattern, path) {
 function runReadFile(repoPath, path, startLine, endLine) {
   let abs;
   try {
-    abs = safePath(repoPath, path);
+    abs = safeRepoPath(repoPath, path);
   } catch (err) {
     return `Error: ${err.message}`;
   }
   if (!existsSync(abs)) return `Error: file not found: ${path}`;
   let content;
   try {
+    if (statSync(abs).size > 2 * 1024 * 1024) return "Error: file exceeds the 2 MB read budget";
     content = readFileSync(abs, "utf-8");
   } catch (err) {
     return `Error reading ${path}: ${err.message}`;
@@ -187,23 +183,6 @@ function executeTool(toolName, input, repoPath) {
   } catch (err) {
     return `Error: ${err.message}`;
   }
-}
-
-// Ensure a local checkout of the PR's repo at the PR head. Shallow-clones into
-// .cache/repos/ on first use, then just fetches pull/<N>/head (which also
-// works for PRs from forks) on later runs.
-function ensureRepoClone(owner, repo, number) {
-  const cacheDir = resolve(__dirname, "..", ".cache", "repos");
-  mkdirSync(cacheDir, { recursive: true });
-  const dir = resolve(cacheDir, `${owner}-${repo}`);
-  const opts = { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 50 * 1024 * 1024 };
-  if (!existsSync(resolve(dir, ".git"))) {
-    log("INFO", `Shallow-cloning ${owner}/${repo} for tip investigation...`);
-    execFileSync("gh", ["repo", "clone", `${owner}/${repo}`, dir, "--", "--depth", "1", "--no-checkout", "--quiet"], opts);
-  }
-  execFileSync("git", ["fetch", "--depth", "1", "--quiet", "origin", `pull/${number}/head`], { ...opts, cwd: dir });
-  execFileSync("git", ["checkout", "--detach", "--force", "--quiet", "FETCH_HEAD"], { ...opts, cwd: dir });
-  return dir;
 }
 
 // Manage prompt-cache breakpoints for the tool loop. Each round re-sends the
@@ -265,13 +244,17 @@ ${diff.slice(0, 400000)}${diff.length > 400000 ? "\n... (diff truncated — trea
       let usage = null;
       text = await runCodex({
         userPrompt: prompt,
+        task: "verification",
+        timeoutMs: MAX_INVESTIGATION_MS,
+        outputSchema: { type: "object", properties: { tips: { type: "array", items: { ...VERDICT_SCHEMA, properties: { ...VERDICT_SCHEMA.properties, tip: { type: "string" } }, required: ["tip", "status", "finding"] } } }, required: ["tips"], additionalProperties: false },
+        ignoreProjectInstructions: true,
         cwd: process.env.REVIEW_ORIGINAL_CWD || process.cwd(),
         onUsage: (u) => { usage = u; },
       });
       log("INFO", `Codex tip verification: ${formatCodexUsage(usage)}`);
     } else {
       const stream = client.messages.stream({
-        model: GENERATION_MODEL,
+        model: getTaskConfig(AI_PROVIDER, "verification").model,
         max_tokens: 8192,
         messages: [{ role: "user", content: prompt }],
       });
@@ -296,7 +279,7 @@ ${diff.slice(0, 400000)}${diff.length > 400000 ? "\n... (diff truncated — trea
         const parsed = JSON.parse(candidate);
         const arr = Array.isArray(parsed) ? parsed : parsed.verified_tips || parsed.tips || [];
         if (arr.length > 0) {
-          verified = arr;
+          verified = arr.filter(validVerdict);
           break;
         }
       } catch {}
@@ -358,6 +341,9 @@ Status meanings:
       let codexUsage = null;
       const text = await runCodex({
         userPrompt: prompt,
+        task: "investigation",
+        outputSchema: VERDICT_SCHEMA,
+        timeoutMs: MAX_INVESTIGATION_MS,
         cwd: repoPath,
         onUsage: (u) => { codexUsage = u; },
       });
@@ -375,7 +361,7 @@ Status meanings:
       for (const candidate of candidates) {
         try {
           const parsed = JSON.parse(candidate);
-          if (parsed.status && parsed.finding) {
+          if (validVerdict(parsed)) {
             return {
               tip: tipText,
               status: parsed.status,
@@ -442,10 +428,9 @@ Do NOT produce the final JSON until you've actually looked at the code. Don't gu
   let cacheRead = 0;
   let cacheWrite = 0;
 
+  const deadline = Date.now() + MAX_INVESTIGATION_MS;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    // On the final round, drop the tools and tell the model to commit. This
-    // salvages the investigation instead of discarding it: it always has one
-    // turn where its only move is to emit the verdict JSON.
+    if (Date.now() >= deadline) break;
     const lastRound = round === MAX_TOOL_ROUNDS - 1;
     if (lastRound) {
       messages.push({
@@ -456,11 +441,11 @@ Do NOT produce the final JSON until you've actually looked at the code. Don't gu
     }
     setCacheBreakpoints(messages);
     const response = await client.messages.create({
-      model: GENERATION_MODEL,
+      model: getTaskConfig(AI_PROVIDER, "investigation").model,
       max_tokens: MAX_TOKENS_PER_ROUND,
-      tools: lastRound ? undefined : TOOLS,
+      tools: TOOLS,
       messages,
-    });
+    }, { timeout: Math.max(1, deadline - Date.now()) });
     inputTokens += response.usage?.input_tokens || 0;
     outputTokens += response.usage?.output_tokens || 0;
     cacheRead += response.usage?.cache_read_input_tokens || 0;
@@ -476,7 +461,7 @@ Do NOT produce the final JSON until you've actually looked at the code. Don't gu
       for (const fence of fences) {
         try {
           const parsed = JSON.parse(fence[1]);
-          if (parsed.status && parsed.finding) {
+          if (validVerdict(parsed)) {
             return {
               tip: tipText,
               status: parsed.status,
@@ -519,41 +504,11 @@ Do NOT produce the final JSON until you've actually looked at the code. Don't gu
   };
 }
 
-// Atomically update a single tip in the walkthrough JSON.
-// Matches by tip text so concurrent writes don't clobber each other and so
-// user-triggered regenerations in between are handled safely (if the tip
-// doesn't exist anymore, we just skip the update).
-function updateTipInFile(jsonPath, original, resolved) {
-  if (!existsSync(jsonPath)) return false;
-  const content = JSON.parse(readFileSync(jsonPath, "utf-8"));
-  const tips = content?.walkthrough?.review_tips;
-  if (!Array.isArray(tips)) return false;
-  const originalText = typeof original === "string" ? original : original.tip;
-  const idx = tips.findIndex((t) => {
-    const txt = typeof t === "string" ? t : t.tip;
-    return txt === originalText && (typeof t === "object" ? t.pending : true);
-  });
-  if (idx === -1) return false;
-  tips[idx] = { ...tips[idx], ...resolved };
-  if (!resolved.pending) delete tips[idx].pending;
-  writeFileSync(jsonPath, JSON.stringify(content, null, 2));
-  return true;
-}
-
-// Update the per-PR JSON and mirror to the default walkthrough-data.json when
-// it holds the same walkthrough.
-function applyTipUpdate(jsonPath, content, tip, resolved) {
-  const wrote = updateTipInFile(jsonPath, tip, resolved);
+async function applyTipUpdate(jsonPath, content, tip, resolved) {
+  const wrote = await updateReviewTip(jsonPath, content.meta, tip, resolved);
   if (wrote) {
     const defaultPath = resolve(__dirname, "..", "public", "walkthrough-data.json");
-    if (existsSync(defaultPath)) {
-      try {
-        const def = JSON.parse(readFileSync(defaultPath, "utf-8"));
-        if (def?.meta && content?.meta && def.meta.headSha === content.meta.headSha) {
-          updateTipInFile(defaultPath, tip, resolved);
-        }
-      } catch {}
-    }
+    await updateReviewTip(defaultPath, content.meta, tip, resolved);
   }
   return wrote;
 }
@@ -563,17 +518,15 @@ async function runPool(items, worker, concurrency) {
   async function next() {
     while (cursor < items.length) {
       const i = cursor++;
-      try {
-        await worker(items[i], i);
-      } catch (err) {
-        log("ERROR", `Worker ${i} threw: ${err.message}`);
-      }
+      await worker(items[i], i);
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, next));
+  const results = await Promise.allSettled(Array.from({ length: Math.min(concurrency, items.length) }, next));
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
 }
 
-async function main() {
+async function main(content) {
   const args = process.argv.slice(2);
   if (args.length === 0) {
     console.error("Usage: node resolve-info-tips.js <slug> [repo-path]");
@@ -583,18 +536,15 @@ async function main() {
   const cwdRepoPath = args[1] ? resolve(args[1]) : process.cwd();
 
   const jsonPath = resolve(__dirname, "..", "public", "walkthroughs", `${slug}.json`);
-  if (!existsSync(jsonPath)) {
-    log("ERROR", `Walkthrough not found: ${jsonPath}`);
-    process.exit(1);
-  }
-
+  AI_PROVIDER = resolveAIProvider(content.meta?.aiProvider);
   const apiKey = AI_PROVIDER === "claude" ? loadEnvKey() : null;
   if (AI_PROVIDER === "claude" && !apiKey) {
     log("ERROR", "No ANTHROPIC_API_KEY found — cannot resolve info tips with Claude");
-    process.exit(1);
+    for (const tip of content?.walkthrough?.review_tips || []) {
+      if (tip.pending) await applyTipUpdate(jsonPath, content, tip, investigationUnavailable(tip.tip, tip.finding, "No ANTHROPIC_API_KEY found"));
+    }
+    return;
   }
-
-  const content = JSON.parse(readFileSync(jsonPath, "utf-8"));
   const tips = content?.walkthrough?.review_tips || [];
   const diff = content?.diff || "";
   const meta = content?.meta || {};
@@ -606,21 +556,21 @@ async function main() {
   }
 
   const client = AI_PROVIDER === "claude"
-    ? new Anthropic({ apiKey, timeout: 5 * 60 * 1000, maxRetries: 2 })
+    ? new Anthropic({ apiKey, timeout: MAX_INVESTIGATION_MS, maxRetries: 0 })
     : null;
 
   // Stage 1: verify everything against the diff in one batch call. Tips that
   // the diff alone settles are finalized; the rest stay pending with the
   // partial finding attached, and go to tool investigation.
   const verdicts = await verifyTipsAgainstDiff(client, pendingTips, diff);
+  if (!sameReview(JSON.parse(readFileSync(jsonPath, "utf8")).meta, meta)) return;
   const remaining = [];
   for (let i = 0; i < pendingTips.length; i++) {
     const tip = pendingTips[i];
     const v =
-      (verdicts || []).find((x) => x.tip === tip.tip) ||
-      (verdicts && verdicts.length === pendingTips.length ? verdicts[i] : null);
+      (verdicts || []).find((x) => x.tip === tip.tip);
     if (v && (v.status === "verified" || v.status === "concern")) {
-      applyTipUpdate(jsonPath, content, tip, {
+      await applyTipUpdate(jsonPath, content, tip, {
         status: v.status,
         finding: v.finding,
         resolved: true,
@@ -628,7 +578,7 @@ async function main() {
       });
     } else {
       const enriched = { ...tip, status: "info", finding: v?.finding || tip.finding };
-      applyTipUpdate(jsonPath, content, tip, {
+      await applyTipUpdate(jsonPath, content, tip, {
         status: "info",
         finding: enriched.finding,
         pending: true,
@@ -640,36 +590,17 @@ async function main() {
 
   if (remaining.length === 0) return;
 
-  // Stage 2: pick the repo to investigate. For GitHub PRs prefer the invoking
-  // directory if it's a clone of the PR's repo; otherwise use a cached shallow
-  // clone at the PR head. --local/--diff reviews always use the invoking dir.
-  let repoPath = cwdRepoPath;
-  if (meta.owner && meta.repo && meta.number) {
-    let cwdMatches = false;
-    try {
-      const remote = execFileSync("git", ["config", "--get", "remote.origin.url"], {
-        cwd: cwdRepoPath,
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-      cwdMatches = remote.includes(`${meta.owner}/${meta.repo}`);
-    } catch {}
-    if (!cwdMatches) {
-      try {
-        repoPath = ensureRepoClone(meta.owner, meta.repo, meta.number);
-      } catch (err) {
-        log("WARN", `Could not clone ${meta.owner}/${meta.repo}: ${err.message} — leaving remaining tips unresolved`);
-        for (const tip of remaining) {
-          applyTipUpdate(jsonPath, content, tip, {
-            status: "info",
-            finding: tip.finding || "Could not be verified from the diff; codebase unavailable for investigation.",
-            resolved: true,
-            pending: false,
-          });
-        }
-        return;
-      }
+  let repoPath;
+  try {
+    const snapshot = await ensureRepoSnapshot(meta, meta.repositoryPath || cwdRepoPath, resolve(__dirname, "..", ".cache", "repos"));
+    repoPath = snapshot.path;
+    log("INFO", `Investigation provenance: ${snapshot.provenance}`);
+  } catch (err) {
+    log("WARN", `Repository unavailable: ${err.message}`);
+    for (const tip of remaining) {
+      await applyTipUpdate(jsonPath, content, tip, investigationUnavailable(tip.tip, tip.finding, err.message));
     }
+    return;
   }
 
   log("INFO", `Investigating ${remaining.length} tips for ${slug} (repo: ${repoPath})`);
@@ -678,9 +609,12 @@ async function main() {
   let resolvedCount = 0;
 
   await runPool(remaining, async (tip, i) => {
+    if (!sameReview(JSON.parse(readFileSync(jsonPath, "utf8")).meta, meta)) return;
     log("INFO", `[${i + 1}/${remaining.length}] Resolving: ${tip.tip.slice(0, 80)}...`);
-    const resolved = await resolveTip(client, tip, repoPath, diff);
-    const wrote = applyTipUpdate(jsonPath, content, tip, resolved);
+    let resolved;
+    try { resolved = await resolveTip(client, tip, repoPath, diff); }
+    catch (error) { resolved = investigationUnavailable(tip.tip, tip.finding, error.message); }
+    const wrote = await applyTipUpdate(jsonPath, content, tip, resolved);
     if (wrote) {
       resolvedCount++;
       log("INFO", `[${i + 1}/${remaining.length}] Resolved → ${resolved.status} (${resolved.usage.rounds} rounds, ${resolved.usage.input} uncached + ${resolved.usage.cacheRead} cached in / ${resolved.usage.output} out)`);
@@ -696,7 +630,25 @@ async function main() {
   log("INFO", `Done. Resolved ${resolvedCount}/${remaining.length}. Total: ${totalRounds} tool rounds, ${totalIn} uncached + ${totalCacheRead} cached input / ${totalOut} output tokens.`);
 }
 
-main().catch((err) => {
+async function runResolver() {
+  const slug = process.argv[2];
+  if (!slug || !/^[A-Za-z0-9_.-]+$/.test(slug) || slug === "." || slug === "..") throw new Error("Invalid walkthrough slug");
+  const jsonPath = resolve(__dirname, "..", "public", "walkthroughs", `${slug}.json`);
+  const expected = JSON.parse(readFileSync(jsonPath, "utf8"));
+  if (!/^[A-Za-z0-9-]+$/.test(expected.meta?.generationId || "")) throw new Error("Review has no generation ID; regenerate it before investigating");
+  const release = await acquireFileLock(`${jsonPath}.${expected.meta.generationId}.resolver.lock`, { timeoutMs: 0 });
+  if (!release) { log("INFO", "Resolver already running for this walkthrough"); return; }
+  try {
+    await main(expected);
+  } catch (error) {
+    if (expected) for (const tip of expected.walkthrough?.review_tips || []) {
+      if (tip.pending) await applyTipUpdate(jsonPath, expected, tip, investigationUnavailable(tip.tip, tip.finding, error.message));
+    }
+    throw error;
+  } finally { await release(); }
+}
+
+runResolver().catch((err) => {
   log("ERROR", `Resolver failed: ${err.message}`);
   if (err.stack) log("ERROR", err.stack);
   process.exit(1);
