@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from "preact/hooks";
 import { signal } from "@preact/signals";
 import { data, currentSectionIndex } from "../state";
 import { md } from "../utils";
+import { walkthroughIdentity } from "../walkthrough-poll";
 
 // ── Chat state (signals) ──────────────────────
 export const chatOpen = signal(false);
@@ -84,25 +85,6 @@ export function ChatThread() {
     }
   }, [chatOpen.value, sectionId]);
 
-  // Build rich context from section data
-  function buildSectionContext() {
-    if (!currentSection) return {};
-    const hunks = (currentSection.hunks || []).map(h => ({
-      file: h.file,
-      lines: `${h.startLine}-${h.endLine}`,
-      importance: h.importance,
-      annotation: h.annotation,
-    }));
-    const callouts = (currentSection.callouts || []).map(c => `[${c.type}] ${c.label}: ${c.text}`);
-    return {
-      sectionTitle: currentSection.title,
-      sectionNarrative: currentSection.narrative,
-      sectionHunks: hunks,
-      sectionCallouts: callouts,
-      sectionDiagram: currentSection.diagram || null,
-    };
-  }
-
   async function sendMessage() {
     if (!input.trim() || streaming) return;
 
@@ -133,8 +115,6 @@ export function ChatThread() {
         .slice(-20)
         .map(m => ({ role: m.role, content: m.content }));
 
-      const sectionCtx = buildSectionContext();
-
       const resp = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -142,15 +122,15 @@ export function ChatThread() {
           message: msg.content,
           history,
           sectionId,
-          ...sectionCtx,
-          prTitle: d?.walkthrough?.title,
-          prUrl: d?.meta?.url,
-          prOverview: d?.walkthrough?.overview,
-          aiProvider,
+          slug: new URLSearchParams(window.location.search).get("pr") || "walkthrough-data",
+          generationId: walkthroughIdentity(d),
         }),
       });
 
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) {
+        const error = await resp.json().catch(() => ({}));
+        throw new Error(error.error || `HTTP ${resp.status}`);
+      }
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
@@ -162,6 +142,7 @@ export function ChatThread() {
         fullContent += decoder.decode(value, { stream: true });
         setStreamContent(fullContent);
       }
+      fullContent += decoder.decode();
 
       if (fullContent.trim()) {
         chatMessages.value = [...chatMessages.value, {
