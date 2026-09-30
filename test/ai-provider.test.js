@@ -113,6 +113,7 @@ test("Codex sends stdin/schema, explicit task config, preserves auth, and remove
     assert.ok(captured.args.includes("project_doc_max_bytes=0"));
     assert.ok(captured.args.some(a => a.endsWith('.trust_level="untrusted"')));
     assert.ok(!captured.args.includes("--ignore-rules"));
+    assert.ok(!captured.args.includes("shell_tool"), "investigation keeps read-only shell available");
     assert.equal(captured.codexHome, "/existing-auth-home");
     assert.ok(captured.prompt.startsWith("<instructions>\nread only"));
     assert.ok(captured.prompt.includes("p".repeat(200000)));
@@ -254,5 +255,18 @@ test("an older CLI's lowercase argument error is classified as a setup failure",
       assert.equal(err.codexSetupFailure, true);
       return true;
     });
+  } finally { fake.cleanup(); }
+});
+
+
+test("provided-context tasks disable shell tools and shell snapshots", async () => {
+  const fake = fakeCodex(`fs.writeFileSync(output, 'answer');`);
+  try {
+    for (const task of ["generation", "patch", "verification", "repair", "chat"]) {
+      await fake.run({ task });
+      const { args } = JSON.parse(readFileSync(fake.capture, "utf8"));
+      assert.equal(args[args.indexOf("shell_tool") - 1], "--disable", task);
+      assert.equal(args[args.indexOf("shell_snapshot") - 1], "--disable", task);
+    }
   } finally { fake.cleanup(); }
 });
