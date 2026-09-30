@@ -167,6 +167,7 @@ export async function runCodex({
     "--disable", "hooks", "--disable", "plugins", "--disable", "apps",
     "--enable", "skip_host_skill_discovery",
   ];
+  if (task !== "investigation") args.push("--disable", "shell_tool", "--disable", "shell_snapshot");
   // Untrusted roots skip project .codex layers. Keep CODEX_HOME for existing auth.
   let root = workDir;
   while (dirname(root) !== root && !existsSync(join(root, ".git"))) root = dirname(root);
