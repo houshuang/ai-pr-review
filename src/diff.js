@@ -50,10 +50,11 @@ export function filterFileToRanges(file, ranges) {
   if (expanded.length === 0) return file;
 
   const filtered = file.blocks.filter((block) => {
-    const blockStart = block.newStartLine;
+    const blockStart = file.isDeleted ? block.oldStartLine : block.newStartLine;
     let blockEnd = blockStart;
     for (const line of block.lines) {
-      if (line.newNumber) blockEnd = Math.max(blockEnd, line.newNumber);
+      const number = file.isDeleted ? line.oldNumber : line.newNumber;
+      if (number) blockEnd = Math.max(blockEnd, number);
     }
     return expanded.some((r) => blockStart <= r.end && blockEnd >= r.start);
   });
