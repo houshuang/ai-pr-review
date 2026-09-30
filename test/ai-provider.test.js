@@ -105,6 +105,21 @@ function fakeCodex(body) {
 
 const send = (event) => `process.stdout.write(${JSON.stringify(JSON.stringify(event) + "\n")});`;
 
+test("writable investigation is explicit, has private temp space, and cannot widen other tasks", async () => {
+  const fake = fakeCodex(`fs.writeFileSync(output, 'done');`);
+  try {
+    assert.equal(await fake.run({ task: "investigation", sandbox: "workspace-write" }), "done");
+    const captured = JSON.parse(readFileSync(fake.capture, "utf8"));
+    assert.equal(captured.args[captured.args.indexOf("--sandbox") + 1], "workspace-write");
+    assert.ok(captured.args.includes("sandbox_workspace_write.writable_roots=[]"));
+    assert.ok(captured.args.includes("sandbox_workspace_write.network_access=true"));
+    rmSync(fake.capture);
+    await assert.rejects(fake.run({ task: "chat", sandbox: "workspace-write" }), /only available for investigation/);
+    await assert.rejects(fake.run({ task: "investigation", sandbox: "danger-full-access" }), /Unsupported Codex sandbox/);
+    assert.equal(existsSync(fake.capture), false);
+  } finally { fake.cleanup(); }
+});
+
 test("Codex sends stdin/schema, explicit task config, preserves auth, and removes output files", async () => {
   const fake = fakeCodex(`fs.writeFileSync(output, '{"ok":true}');
     ${send({ type: "turn.completed", usage: { input_tokens: 20, cached_input_tokens: 5, output_tokens: 2 } })}`);
