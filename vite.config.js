@@ -1,13 +1,14 @@
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
-import { execSync } from 'child_process';
-import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { tmpdir } from 'os';
+import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
-import { GENERATION_MODEL } from './src/models.js';
+import { getTaskConfig } from './src/models.js';
 import { resolveAIProvider, runCodex } from './src/ai-provider.js';
+import { createGithubHandler, createExportHandler, validSlug, sendError } from './src/server-http.js';
+import { createChatHandler } from './src/server-chat.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logsDir = resolve(__dirname, 'logs');
@@ -20,316 +21,65 @@ function apiLog(level, method, endpoint, detail) {
   appendFileSync(apiLogFile, line);
 }
 
-// Middleware to proxy GitHub API calls through `gh` CLI
-function ghApiProxy() {
-  return {
-    name: 'gh-api-proxy',
-    configureServer(server) {
-      // POST /api/gh — proxy arbitrary gh api calls
-      server.middlewares.use('/api/gh', (req, res) => {
-        if (req.method !== 'POST') {
-          res.statusCode = 405;
-          res.end(JSON.stringify({ error: 'POST only' }));
-          return;
-        }
-
-        let body = '';
-        req.on('data', (chunk) => (body += chunk));
-        req.on('end', () => {
-          let httpMethod = 'unknown';
-          let endpoint = 'unknown';
-          try {
-            const parsed = JSON.parse(body);
-            endpoint = parsed.endpoint;
-            const data = parsed.data;
-            httpMethod = (parsed.method || 'GET').toUpperCase();
-
-            // For GET requests, append data fields as query parameters in the URL
-            // For other methods, pass as -f body fields
-            let apiEndpoint = endpoint;
-            if (httpMethod === 'GET' && data && typeof data === 'object') {
-              const params = new URLSearchParams();
-              for (const [key, value] of Object.entries(data)) {
-                params.append(key, String(value));
-              }
-              const sep = apiEndpoint.includes('?') ? '&' : '?';
-              apiEndpoint += sep + params.toString();
-            }
-
-            const safeEndpoint = apiEndpoint.replace(/'/g, "'\\''");
-            let cmd = `gh api '${safeEndpoint}' --method ${httpMethod}`;
-
-            if (httpMethod !== 'GET' && data && typeof data === 'object') {
-              for (const [key, value] of Object.entries(data)) {
-                const escaped = String(value).replace(/'/g, "'\\''");
-                cmd += ` -f ${key}='${escaped}'`;
-              }
-            }
-
-            apiLog('INFO', httpMethod, endpoint, httpMethod !== 'GET' ? `keys: ${Object.keys(data || {}).join(', ')}` : null);
-
-            const result = execSync(cmd, {
-              encoding: 'utf-8',
-              maxBuffer: 10 * 1024 * 1024,
-            });
-
-            res.setHeader('Content-Type', 'application/json');
-            res.end(result);
-          } catch (err) {
-            const stderr = err.stderr?.toString() || '';
-            apiLog('ERROR', httpMethod, endpoint, `${err.message}${stderr ? '\n  stderr: ' + stderr : ''}`);
-            const httpStatus = stderr.includes('HTTP 422') ? 422 : stderr.includes('HTTP 404') ? 404 : 500;
-            res.statusCode = httpStatus;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({
-              error: err.message,
-              stderr,
-            }));
-          }
-        });
-      });
-    },
-  };
+function endpointPlugin(name, path, handler) {
+  return { name, configureServer(server) { server.middlewares.use(path, handler); } };
 }
 
-// Serve walkthrough JSON files directly from disk on every request.
-// Vite's built-in static handler caches the public/ directory listing at
-// startup, so files generated after `pnpm dev` started get served as the
-// SPA's index.html instead of as JSON. Reading from disk per request avoids
-// the need to restart the dev server when a new walkthrough is generated.
+// Walkthroughs generated after Vite starts must bypass its cached public listing.
 function walkthroughsEndpoint() {
   return {
     name: 'walkthroughs-endpoint',
     configureServer(server) {
-      const publicDir = resolve(__dirname, 'public');
-      server.middlewares.use((req, res, next) => {
-        if (!req.url) return next();
-        const url = req.url.split('?')[0];
-
-        let relPath = null;
-        if (url.startsWith('/walkthroughs/') && url.endsWith('.json')) {
-          relPath = url.slice(1); // walkthroughs/<slug>.json
-        } else if (url === '/walkthrough-data.json') {
-          relPath = 'walkthrough-data.json';
-        }
-        if (!relPath) return next();
-
-        // Prevent path traversal — relPath must stay inside publicDir.
-        const abs = resolve(publicDir, relPath);
-        if (!abs.startsWith(publicDir + '/') && abs !== publicDir) {
-          res.statusCode = 400;
-          res.end('Bad request');
-          return;
-        }
-        if (!existsSync(abs)) {
-          res.statusCode = 404;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ error: 'Not found' }));
-          return;
-        }
+      server.middlewares.use(async (req, res, next) => {
+        const url = req.url?.split('?')[0];
+        if (!url) return next();
+        let path;
+        if (url === '/walkthrough-data.json') path = resolve(__dirname, 'public/walkthrough-data.json');
+        else if (url.startsWith('/walkthroughs/') && url.endsWith('.json')) {
+          const slug = url.slice('/walkthroughs/'.length, -'.json'.length);
+          if (!validSlug(slug)) { res.statusCode = 400; res.end('Bad request'); return; }
+          path = resolve(__dirname, 'public/walkthroughs', `${slug}.json`);
+        } else return next();
         try {
-          const content = readFileSync(abs, 'utf-8');
+          const content = await readFile(path, 'utf8');
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.setHeader('Cache-Control', 'no-store');
           res.end(content);
-        } catch (err) {
-          res.statusCode = 500;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ error: err.message }));
+        } catch (error) {
+          if (error.code === 'ENOENT') { error.status = 404; error.message = 'Not found'; }
+          sendError(res, error);
         }
       });
     },
   };
 }
 
-// Endpoint to export a static HTML walkthrough
-function exportEndpoint() {
-  return {
-    name: 'export-endpoint',
-    configureServer(server) {
-      server.middlewares.use('/api/export', (req, res) => {
-        if (req.method !== 'GET') {
-          res.statusCode = 405;
-          res.end(JSON.stringify({ error: 'GET only' }));
-          return;
-        }
-
-        try {
-          const url = new URL(req.url, 'http://localhost');
-          const slug = url.searchParams.get('slug') || 'walkthrough-data';
-          const mode = url.searchParams.get('mode') || 'unified';
-          const tmpFile = `/tmp/review-export-${slug}.html`;
-
-          execSync(
-            `node src/export-static.js ${JSON.stringify(slug)} --output ${JSON.stringify(tmpFile)} --mode ${JSON.stringify(mode)}`,
-            { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
-          );
-
-          const html = readFileSync(tmpFile, 'utf-8');
-          res.setHeader('Content-Type', 'text/html; charset=utf-8');
-          res.setHeader('Content-Disposition', `attachment; filename="${slug}.html"`);
-          res.end(html);
-        } catch (err) {
-          res.statusCode = 500;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ error: err.message, stderr: err.stderr?.toString() || '' }));
-        }
-      });
-    },
-  };
-}
-
-// Load API key from env or .env file
 function loadChatApiKey() {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  const __dir = dirname(fileURLToPath(import.meta.url));
-  const envPath = resolve(__dir, '.env');
+  const envPath = resolve(__dirname, '.env');
   if (existsSync(envPath)) {
-    for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
-      const m = line.match(/^ANTHROPIC_(?:API_)?KEY=(.+)$/);
-      if (m) return m[1].trim();
+    for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+      const match = line.match(/^ANTHROPIC_(?:API_)?KEY=(.+)$/);
+      if (match) return match[1].trim();
     }
   }
   return null;
 }
 
-// Middleware to handle AI chat with the provider used for the walkthrough.
-function chatMiddleware() {
-  return {
-    name: 'chat-middleware',
-    configureServer(server) {
-      server.middlewares.use('/api/chat', (req, res) => {
-        if (req.method !== 'POST') {
-          res.statusCode = 405;
-          res.end(JSON.stringify({ error: 'POST only' }));
-          return;
-        }
-
-        let body = '';
-        req.on('data', (chunk) => (body += chunk));
-        req.on('end', async () => {
-          try {
-            const {
-              message, history, sectionTitle,
-              sectionNarrative, sectionHunks, sectionCallouts, sectionDiagram,
-              prTitle, prUrl, prOverview, aiProvider,
-            } = JSON.parse(body);
-            const provider = resolveAIProvider(aiProvider);
-
-            // Build rich hunk context
-            let hunksContext = '';
-            if (sectionHunks?.length) {
-              hunksContext = '\n## Code Changes in this Section\n' +
-                sectionHunks.map(h =>
-                  `**${h.file}** (lines ${h.lines}, ${h.importance})\n${h.annotation}`
-                ).join('\n\n');
-            }
-
-            let calloutsContext = '';
-            if (sectionCallouts?.length) {
-              calloutsContext = '\n## Callouts\n' + sectionCallouts.join('\n');
-            }
-
-            const systemPrompt = [
-              'You are an AI code review assistant embedded in a PR walkthrough tool.',
-              'You help reviewers understand code changes, design decisions, and implications.',
-              'You have the full context of the current section including narrative, code annotations, and callouts.',
-              '',
-              prTitle ? `## PR: ${prTitle}` : '',
-              prUrl ? `URL: ${prUrl}` : '',
-              prOverview ? `## Overview\n${prOverview}` : '',
-              sectionTitle ? `## Current Section: ${sectionTitle}` : '',
-              sectionNarrative ? `## Section Narrative\n${sectionNarrative}` : '',
-              hunksContext,
-              calloutsContext,
-              sectionDiagram ? `## Section Diagram\n${sectionDiagram}` : '',
-              '',
-              '## Instructions',
-              '- Answer questions about the code changes in this PR section',
-              '- When referencing code, cite specific files and line numbers',
-              '- If the user quotes code with >, focus your answer on that specific code',
-              '- Keep responses concise and actionable — this is a review context',
-              '- Format with markdown: code blocks, bold, lists, tables',
-            ].filter(Boolean).join('\n');
-
-            // Build messages from conversation history
-            const messages = [];
-            for (const m of (history || []).slice(-20)) {
-              if (m.role === 'user' || m.role === 'assistant') {
-                messages.push({ role: m.role, content: m.content });
-              }
-            }
-            // Replace last user message (it's the current one) or add it
-            if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
-              messages[messages.length - 1].content = message;
-            } else {
-              messages.push({ role: 'user', content: message });
-            }
-
-            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-            res.setHeader('Cache-Control', 'no-cache');
-
-            if (provider === 'codex') {
-              const conversation = messages
-                .map((item) => `${item.role === 'assistant' ? 'Assistant' : 'User'}: ${item.content}`)
-                .join('\n\n');
-              // Like the Claude path, answer from the section context only;
-              // running outside any repo keeps Codex from browsing unrelated code.
-              const abort = new AbortController();
-              res.on('close', () => { if (!res.writableEnded) abort.abort(); });
-              const answer = await runCodex({
-                systemPrompt,
-                userPrompt: `Continue this conversation. Respond only with the assistant's next answer.\n\n${conversation}`,
-                cwd: tmpdir(),
-                signal: abort.signal,
-              });
-              res.end(answer);
-            } else {
-              const apiKey = loadChatApiKey();
-              if (!apiKey) {
-                res.statusCode = 500;
-                res.setHeader('Content-Type', 'application/json');
-                res.end(JSON.stringify({ error: 'No ANTHROPIC_API_KEY configured' }));
-                return;
-              }
-              const client = new Anthropic({ apiKey });
-              const stream = await client.messages.stream({
-                model: GENERATION_MODEL,
-                max_tokens: 4096,
-                system: systemPrompt,
-                messages,
-              });
-
-              let aborted = false;
-              res.on('close', () => { aborted = true; stream.abort(); });
-
-              for await (const event of stream) {
-                if (aborted) break;
-                if (event.type === 'content_block_delta' && event.delta?.text) {
-                  res.write(event.delta.text);
-                }
-              }
-              res.end();
-            }
-          } catch (err) {
-            if (!res.headersSent) {
-              res.statusCode = 500;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ error: err.message }));
-            } else {
-              res.end();
-            }
-          }
-        });
-      });
-    },
-  };
-}
-
 export default defineConfig({
   root: '.',
-  build: {
-    outDir: 'dist',
-  },
-  plugins: [preact(), walkthroughsEndpoint(), ghApiProxy(), exportEndpoint(), chatMiddleware()],
+  build: { outDir: 'dist' },
+  plugins: [
+    preact(), walkthroughsEndpoint(),
+    endpointPlugin('gh-api-proxy', '/api/gh', createGithubHandler({ log: apiLog })),
+    endpointPlugin('export-endpoint', '/api/export', createExportHandler({ root: __dirname })),
+    endpointPlugin('chat-middleware', '/api/chat', createChatHandler({
+      root: __dirname, runCodex, resolveAIProvider, taskConfig: getTaskConfig,
+      anthropicClient: () => {
+        const apiKey = loadChatApiKey();
+        if (!apiKey) throw new Error('No ANTHROPIC_API_KEY configured');
+        return new Anthropic({ apiKey, timeout: 5 * 60_000 });
+      },
+    })),
+  ],
 });

@@ -1,11 +1,12 @@
 import { h } from "preact";
-import { useEffect, useCallback } from "preact/hooks";
+import { useEffect, useCallback, useState } from "preact/hooks";
 import {
   data, parsedFiles, viewMode, darkMode, actionPanelOpen,
   reviewState, getFileCoverage, loadReviewState, applyAutoCollapse,
   loadError, diffViewMode,
 } from "../state";
 import { parseDiff } from "../diff";
+import { startWalkthroughPolling } from "../walkthrough-poll";
 import { ensureMermaidLoaded } from "../mermaid";
 import { getActionItems } from "../keyboard";
 import { scrollToFileLine } from "../utils";
@@ -78,91 +79,32 @@ function summarizeTips(tips) {
 }
 
 export function App() {
-  // Auto-load walkthrough data on mount
+  const [walkthroughChanged, setWalkthroughChanged] = useState(false);
   useEffect(() => {
     const slug = getRequestedSlug();
-    const url = getWalkthroughUrl(slug);
-    let pollTimer = null;
-    let cancelled = false;
-
-    function hasPendingTips(json) {
-      return (json?.walkthrough?.review_tips || []).some(
-        (t) => typeof t === "object" && t.pending
-      );
-    }
-
-    async function load(isInitial) {
-      let resp;
-      try {
-        resp = await fetch(url + (isInitial ? "" : `?t=${Date.now()}`));
-      } catch (err) {
-        if (isInitial && slug) loadError.value = { slug, kind: "network", message: err.message };
-        return;
-      }
-
-      if (!resp.ok) {
-        if (isInitial && slug) {
-          loadError.value = resp.status === 404
-            ? { slug, kind: "missing" }
-            : { slug, kind: "http", message: `HTTP ${resp.status}` };
-        }
-        return;
-      }
-
-      const contentType = resp.headers.get("content-type") || "";
-      if (!contentType.includes("json")) {
-        if (isInitial && slug) loadError.value = { slug, kind: "stale-dev-server" };
-        return;
-      }
-
-      let json;
-      try {
-        json = await resp.json();
-      } catch (err) {
-        if (isInitial && slug) loadError.value = { slug, kind: "parse", message: err.message };
-        return;
-      }
-
-      if (cancelled) return;
-
-      if (isInitial) {
+    return startWalkthroughPolling({
+      url: getWalkthroughUrl(slug),
+      getCurrent: () => data.value,
+      onInitial: json => {
+        loadError.value = null;
         data.value = json;
         parsedFiles.value = parseDiff(json.diff);
         loadReviewState();
         applyAutoCollapse();
         ensureMermaidLoaded();
-      } else {
-        // Polling update: merge in only the review_tips so we don't blow away
-        // reactive state on unrelated parts of the walkthrough.
+      },
+      onTips: tips => {
         const current = data.value;
-        const tips = json?.walkthrough?.review_tips;
-        if (current?.walkthrough && tips) {
-          const wasPending = hasPendingTips(current);
-          holdScrollPosition();
-          data.value = {
-            ...current,
-            walkthrough: { ...current.walkthrough, review_tips: tips },
-          };
-          if (wasPending && !hasPendingTips(json)) {
-            showToast(summarizeTips(tips), {
-              onClick: () => document.querySelector(".review-tips")
-                ?.scrollIntoView({ behavior: "smooth", block: "start" }),
-            });
-          }
+        const wasPending = current.walkthrough.review_tips?.some(tip => tip.pending);
+        holdScrollPosition();
+        data.value = { ...current, walkthrough: { ...current.walkthrough, review_tips: tips } };
+        if (wasPending && !tips.some(tip => tip.pending)) {
+          showToast(summarizeTips(tips), { onClick: () => document.querySelector('.review-tips')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) });
         }
-      }
-
-      if (hasPendingTips(json)) {
-        pollTimer = setTimeout(() => load(false), 4000);
-      }
-    }
-
-    load(true);
-
-    return () => {
-      cancelled = true;
-      if (pollTimer) clearTimeout(pollTimer);
-    };
+      },
+      onError: error => { if (slug) loadError.value = { slug, ...error }; },
+      onChanged: () => setWalkthroughChanged(true),
+    });
   }, []);
 
   // Dark mode effect
@@ -375,6 +317,9 @@ export function App() {
 
   return (
     <>
+      {walkthroughChanged && <div class="stale-banner">
+        A newer walkthrough is available. <button class="btn btn-sm" onClick={() => window.location.reload()}>Reload walkthrough</button>
+      </div>}
       <StaleBanner />
       <Layout callbacks={callbacks} />
       <ChatThread />
