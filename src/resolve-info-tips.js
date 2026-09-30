@@ -22,7 +22,7 @@ const evidenceSchema = {
   type: "object",
   properties: {
     files: { type: "array", items: { type: "string" } },
-    tests: { type: "array", items: {
+    tests: { type: "array", minItems: 1, items: {
       type: "object", properties: {
         command: { type: "string" }, outcome: { type: "string", enum: ["passed", "failed", "not-run"] }, detail: { type: "string" },
       }, required: ["command", "outcome", "detail"], additionalProperties: false,
@@ -46,7 +46,7 @@ function parseVerdict(text, repoPath) {
     let value;
     try { value = JSON.parse(candidate); } catch { continue; }
     if (!["verified", "concern", "info"].includes(value?.status) || !value.finding?.trim() || !Array.isArray(value.evidence?.files) || !Array.isArray(value.evidence?.tests)) continue;
-    if (!value.evidence.tests.every((test) => typeof test.command === "string" && ["passed", "failed", "not-run"].includes(test.outcome) && typeof test.detail === "string" && test.detail.trim())) continue;
+    if (!value.evidence.tests.length || !value.evidence.tests.every((test) => typeof test.command === "string" && ["passed", "failed", "not-run"].includes(test.outcome) && typeof test.detail === "string" && test.detail.trim())) continue;
     if (value.status !== "info" && (!value.evidence.files.length || !value.evidence.tests.length)) continue;
     try {
       for (const reference of value.evidence.files) {
@@ -64,6 +64,7 @@ function parseVerdict(text, repoPath) {
 async function investigate(meta, tip, invokingPath, diff) {
   if (setupFailure) return blocked(setupFailure);
   let workspace;
+  const deadline = Date.now() + MAX_INVESTIGATION_MS;
   try {
     workspace = await createInvestigationWorkspace(meta, invokingPath, resolve(directory, "..", ".cache", "repos"), { diff });
     const prompt = `Investigate this entire code review check against the full repository in your current disposable worktree. Search every relevant implementation, caller, schema and test, including files outside the diff. Run the relevant existing tests and, when useful, write temporary focused regression tests to confirm the behavior. Install local dependencies if needed, keeping caches/stores inside the worktree (for pnpm use --store-dir .review-test-cache/pnpm). Do not stop at "requires runtime testing" when you can run that test here.
@@ -80,13 +81,18 @@ ${diff.slice(0, 16000)}
 Return ONLY JSON {"status":"verified|concern|info","finding":"specific conclusion with file:line references","evidence":{"files":["path:line"],"tests":[{"command":"exact command run or proposed","outcome":"passed|failed|not-run","detail":"observed result, or exact blocker"}]}}.
 verified means the check is addressed or not an issue after inspecting the full code. concern means a concrete issue remains; explain the failure and evidence. info means a required check is blocked by unavailable environment/external context; describe exactly what is missing. Run tests whenever feasible; if static analysis completely settles a check and no runtime test is useful, record not-run with that specific reason. Never claim a test passed unless it ran. An infrastructure failure is not a code verdict.`;
     const usage = { input: 0, output: 0, cachedInput: 0 };
-    const deadline = Date.now() + MAX_INVESTIGATION_MS;
     let verdict;
     let request = prompt;
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (Date.now() >= deadline) throw new Error("Investigation deadline expired before Codex could finish the check");
       const text = await runCodex({ userPrompt: request, task: "investigation", sandbox: "workspace-write", cwd: workspace.path, outputSchema: verdictSchema, timeoutMs: Math.max(1, deadline - Date.now()), signal: controller.signal, env: { ...process.env, npm_config_cache: resolve(workspace.path, ".review-test-cache", "npm"), npm_config_store_dir: resolve(workspace.path, ".review-test-cache", "pnpm"), XDG_CACHE_HOME: resolve(workspace.path, ".review-test-cache") }, onUsage: (value) => { for (const key of Object.keys(usage)) usage[key] += value?.[key] || 0; } });
-      verdict = parseVerdict(text, workspace.path);
-      if (verdict.status !== "info" || !verdict.evidence.tests.some((test) => test.outcome === "not-run") || Date.now() >= deadline) break;
+      try { verdict = parseVerdict(text, workspace.path); }
+      catch (error) {
+        if (attempt === 1 || Date.now() >= deadline) throw error;
+        request = `${prompt}\n\nYour previous response could not be validated: ${error.message}. Make one final attempt and return a complete verdict with real file references and at least one actual test result or a specific check blocker. Previous response: ${text.slice(0, 4000)}`;
+        continue;
+      }
+      if (verdict.status !== "info" || Date.now() >= deadline) break;
       request = `${prompt}\n\nYour previous investigation remained incomplete: ${JSON.stringify(verdict)}. Make one final attempt to run the missing relevant local checks or install dependencies in this worktree. If a concrete external prerequisite prevents completion, describe it precisely. Do not repeat a vague recommendation to run tests.`;
     }
     return { ...verdict, investigationState: verdict.status === "info" ? "blocked" : "complete", investigationProvider: "codex", investigationProvenance: workspace.provenance, resolved: verdict.status !== "info", pending: false, usage };

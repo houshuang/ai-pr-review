@@ -90,7 +90,7 @@ test("task defaults and legacy/global/stage overrides have deterministic precede
 function fakeCodex(body) {
   const dir = mkdtempSync(join(tmpdir(), "fake-review-codex-"));
   const capture = join(dir, "capture.json");
-  const script = `#!/usr/bin/env node\nimport fs from 'node:fs';\nconst args = process.argv.slice(2);\nconst output = args[args.indexOf('--output-last-message') + 1];\nconst schemaPath = args.includes('--output-schema') ? args[args.indexOf('--output-schema') + 1] : null;\nlet prompt = '';\nprocess.stdin.setEncoding('utf8');\nprocess.stdin.on('data', chunk => prompt += chunk);\nprocess.stdin.on('end', () => {\nfs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ args, prompt, output, schemaPath, schema: schemaPath ? JSON.parse(fs.readFileSync(schemaPath)) : null, codexHome: process.env.CODEX_HOME }));\n${body}\n});\n`;
+  const script = `#!/usr/bin/env node\nimport fs from 'node:fs';\nconst args = process.argv.slice(2);\nconst output = args[args.indexOf('--output-last-message') + 1];\nconst schemaPath = args.includes('--output-schema') ? args[args.indexOf('--output-schema') + 1] : null;\nlet prompt = '';\nprocess.stdin.setEncoding('utf8');\nprocess.stdin.on('data', chunk => prompt += chunk);\nprocess.stdin.on('end', () => {\nfs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ args, prompt, output, schemaPath, schema: schemaPath ? JSON.parse(fs.readFileSync(schemaPath)) : null, codexHome: process.env.CODEX_HOME, temp: process.env.TMPDIR }));\n${body}\n});\n`;
   symlinkSync(process.execPath, join(dir, "node"));
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   writeFileSync(join(dir, "codex"), script);
@@ -113,6 +113,8 @@ test("writable investigation is explicit, has private temp space, and cannot wid
     assert.equal(captured.args[captured.args.indexOf("--sandbox") + 1], "workspace-write");
     assert.ok(captured.args.includes("sandbox_workspace_write.writable_roots=[]"));
     assert.ok(captured.args.includes("sandbox_workspace_write.network_access=true"));
+    assert.ok(captured.output.startsWith(captured.temp + "/"));
+    assert.equal(existsSync(captured.temp), false);
     rmSync(fake.capture);
     await assert.rejects(fake.run({ task: "chat", sandbox: "workspace-write" }), /only available for investigation/);
     await assert.rejects(fake.run({ task: "investigation", sandbox: "danger-full-access" }), /Unsupported Codex sandbox/);

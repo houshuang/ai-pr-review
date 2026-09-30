@@ -34,6 +34,8 @@ let input = ''; process.stdin.on('data', data => input += data); process.stdin.o
   let result = {status: 'concern', finding: fs.readFileSync('code.txt', 'utf8').trim(),evidence:{files:['code.txt:1'],tests:[{command:'node --test check.test.cjs',outcome:'passed',detail:output}]}};
   if (process.env.SCENARIO === 'invalid') result.status = 'invented';
   if (process.env.SCENARIO === 'info') result = {status:'info',finding:'external service is unavailable',evidence:{files:['code.txt:1'],tests:[{command:'remote integration test',outcome:'not-run',detail:'requires an unavailable external service'}]}};
+  if (process.env.SCENARIO === 'info-passed') {result.status='info';result.finding='The check remains incomplete despite this unrelated passed test';}
+  if (process.env.SCENARIO === 'empty-tests') result = {status:'info',finding:'Needs more investigation',evidence:{files:[],tests:[]}};
   fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], JSON.stringify(result));
   process.stdout.write(JSON.stringify({type:'turn.completed',usage:{input_tokens:10,output_tokens:5}}) + '\\n');
 });`, { mode: 0o755 });
@@ -134,9 +136,11 @@ test("invalid verdicts and timeouts remain blocked and clean disposable worktree
 });
 
 test("missing local checks get at most one further attempt before a retryable blocked result", async (t) => {
-  const f = fixture(t, "info");
-  await f.run();
-  assert.equal(f.calls().length, 2);
-  assert.equal(f.read().walkthrough.review_tips[0].investigationState, "blocked");
-  assert.match(f.calls()[1].prompt, /one final attempt/);
+  for (const scenario of ["info", "info-passed", "empty-tests"]) {
+    const f = fixture(t, scenario);
+    await f.run();
+    assert.equal(f.calls().length, 2);
+    assert.equal(f.read().walkthrough.review_tips[0].investigationState, "blocked");
+    assert.match(f.calls()[1].prompt, /one final attempt/);
+  }
 });

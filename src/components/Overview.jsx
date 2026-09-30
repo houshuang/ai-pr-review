@@ -34,6 +34,9 @@ export function Overview() {
               const pending = isObj && t.pending;
               const tipText = isObj ? t.tip : t;
               const finding = isObj ? t.finding : null;
+              const blocked = isObj && t.investigationState === "blocked";
+              const complete = isObj && t.investigationState === "complete";
+              const checks = isObj && Array.isArray(t.evidence?.tests) ? t.evidence.tests : [];
               const icon = status === "verified" ? "✓" : status === "concern" ? "⚠" : status === "info" ? "ℹ" : null;
               return (
                 <li key={i} className={`review-tip ${status || "legacy"} ${pending ? "pending" : ""}`}>
@@ -43,8 +46,18 @@ export function Overview() {
                   <div className="tip-content">
                     <span className="tip-text" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(tipText)) }} />
                     {pending
-                      ? <span className="tip-finding tip-finding-pending">Investigating codebase…</span>
+                      ? <span className="tip-finding tip-finding-pending">Codex is checking the full code and running relevant tests…</span>
                       : finding && <span className="tip-finding" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(finding)) }} />}
+                    {!pending && (blocked || complete) && <span className="tip-finding">
+                      {blocked ? "Check blocked · retries on the next review run" : status === "concern" ? "Full-code check complete · issue confirmed" : "Full-code check complete"}
+                    </span>}
+                    {!pending && checks.length > 0 && <details className="tip-finding">
+                      <summary>Checks and test results</summary>
+                      <ul>{checks.map((check, index) => <li key={index}>
+                        <code>{check.command}</code> — {check.outcome}
+                        {check.detail && <div>{check.detail}</div>}
+                      </li>)}</ul>
+                    </details>}
                   </div>
                 </li>
               );

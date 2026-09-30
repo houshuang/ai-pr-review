@@ -95,10 +95,11 @@ function filterFileToRanges(file, ranges) {
     .map((r) => ({ start: r.startLine - CONTEXT, end: r.endLine + CONTEXT }));
   if (expanded.length === 0) return file;
   const filtered = file.blocks.filter((block) => {
-    const blockStart = block.newStartLine;
+    const blockStart = file.isDeleted ? block.oldStartLine : block.newStartLine;
     let blockEnd = blockStart;
     for (const line of block.lines) {
-      if (line.newNumber) blockEnd = Math.max(blockEnd, line.newNumber);
+      const number = file.isDeleted ? line.oldNumber : line.newNumber;
+      if (number) blockEnd = Math.max(blockEnd, number);
     }
     return expanded.some((r) => blockStart <= r.end && blockEnd >= r.start);
   });
@@ -241,7 +242,11 @@ function renderOverview(wt) {
             const icon = pending ? "⋯" : status === "verified" ? "✓" : status === "concern" ? "⚠" : status === "info" ? "ℹ" : "";
             const iconClass = pending ? "tip-pending" : `tip-${status}`;
             const findingText = pending ? "Background investigation was still in progress at export time." : finding;
-            return `<li class="review-tip ${status} ${pending ? "pending" : ""}">${icon ? `<span class="tip-icon ${iconClass}">${icon}</span>` : ""}<div class="tip-content"><span class="tip-text">${md(tipText)}</span>${findingText ? `<span class="tip-finding${pending ? " tip-finding-pending" : ""}">${md(findingText)}</span>` : ""}</div></li>`;
+            const state = isObj && t.investigationState;
+            const stateText = state === "blocked" ? "Check blocked" : state === "complete" ? "Full-code check complete" : "";
+            const checks = !pending && Array.isArray(t.evidence?.tests) ? t.evidence.tests : [];
+            const checkHtml = checks.length ? `<details class="tip-finding"><summary>Checks and test results</summary><ul>${checks.map(check => `<li><code>${esc(check.command)}</code> — ${esc(check.outcome)}${check.detail ? `<div>${esc(check.detail)}</div>` : ""}</li>`).join("")}</ul></details>` : "";
+            return `<li class="review-tip ${status} ${pending ? "pending" : ""}">${icon ? `<span class="tip-icon ${iconClass}">${icon}</span>` : ""}<div class="tip-content"><span class="tip-text">${md(tipText)}</span>${findingText ? `<span class="tip-finding${pending ? " tip-finding-pending" : ""}">${md(findingText)}</span>` : ""}${!pending && stateText ? `<span class="tip-finding">${stateText}</span>` : ""}${checkHtml}</div></li>`;
           })
           .join("")}</ul>
       </div>`;

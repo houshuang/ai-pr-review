@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 3;
 export const hash = (value) => createHash("sha256").update(value).digest("hex");
 
 export function configFingerprint(provider, tasks) {
