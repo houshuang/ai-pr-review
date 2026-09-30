@@ -153,7 +153,12 @@ export async function runCodex({
   env = process.env,
 }) {
   if (signal?.aborted) throw new Error("Codex run aborted");
-  const config = getTaskConfig("codex", task, env);
+  const stage = `REVIEW_CODEX_${task.toUpperCase()}`;
+  const config = getTaskConfig("codex", task, {
+    ...env,
+    ...(model ? { [`${stage}_MODEL`]: model } : {}),
+    ...(effort ? { [`${stage}_EFFORT`]: effort } : {}),
+  });
   const tempDir = mkdtempSync(join(tmpdir(), "review-codex-"));
   const outputPath = join(tempDir, "last-message.txt");
   const workDir = resolve(cwd);
@@ -161,8 +166,8 @@ export async function runCodex({
     "exec", "--ephemeral", "--json", "--color", "never",
     "--sandbox", "read-only", "--skip-git-repo-check",
     "--ignore-user-config", "--output-last-message", outputPath,
-    "--model", model || config.model,
-    "-c", `model_reasoning_effort=${JSON.stringify(effort || config.effort)}`,
+    "--model", config.model,
+    "-c", `model_reasoning_effort=${JSON.stringify(config.effort)}`,
     "-c", 'approval_policy="never"',
     "--disable", "hooks", "--disable", "plugins", "--disable", "apps",
     "--enable", "skip_host_skill_discovery",

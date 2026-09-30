@@ -277,3 +277,16 @@ test("provided-context tasks disable shell tools and shell snapshots", async () 
     }
   } finally { fake.cleanup(); }
 });
+
+
+test("explicit runner model and effort overrides are validated before starting a child", async () => {
+  const fake = fakeCodex(`fs.writeFileSync(output, 'answer');`);
+  try {
+    await assert.rejects(fake.run({ effort: "minimal" }), /does not support/);
+    assert.equal(existsSync(fake.capture), false);
+    assert.equal(await fake.run({ model: "other", effort: "none" }), "answer");
+    const { args } = JSON.parse(readFileSync(fake.capture, "utf8"));
+    assert.equal(args[args.indexOf("--model") + 1], "other");
+    assert.ok(args.includes('model_reasoning_effort="none"'));
+  } finally { fake.cleanup(); }
+});
