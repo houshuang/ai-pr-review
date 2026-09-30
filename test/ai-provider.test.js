@@ -70,6 +70,13 @@ test("task defaults and legacy/global/stage overrides have deterministic precede
   assert.equal(getTaskConfig("claude", "generation", {}).model, "claude-opus-5-5");
   assert.equal(getTaskConfig("claude", "repair", {}).model, "claude-haiku-4-5-20251001");
   assert.equal(getTaskConfig("claude", "chat", {}).effort, "low");
+  assert.equal(getTaskConfig("claude", "generation", {}).effort, "medium");
+  assert.equal(getTaskConfig("claude", "verification", {}).effort, "medium");
+  assert.equal(getTaskConfig("claude", "investigation", {}).effort, "high");
+  assert.equal(getTaskConfig("claude", "generation", { REVIEW_CLAUDE_EFFORT: "xhigh" }).effort, "xhigh");
+  assert.throws(() => getTaskConfig("codex", "generation", { REVIEW_CODEX_EFFORT: "none" }), /does not support/);
+  assert.throws(() => getTaskConfig("codex", "chat", { REVIEW_CODEX_CHAT_EFFORT: "minimal" }), /does not support/);
+  assert.equal(getTaskConfig("codex", "generation", { REVIEW_CODEX_MODEL: "other", REVIEW_CODEX_EFFORT: "none" }).effort, "none");
   assert.deepEqual(getTaskConfig("codex", "patch", {
     REVIEW_CODEX_MODEL: "global", REVIEW_CODEX_PATCH_MODEL: "stage",
     REVIEW_CODEX_EFFORT: "high", REVIEW_CODEX_PATCH_EFFORT: "low",
