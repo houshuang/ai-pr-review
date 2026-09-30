@@ -2,7 +2,7 @@
 
 ## What This Is
 
-An AI-narrated interactive code review tool. Takes a PR diff, uses Claude to generate a structured walkthrough that guides the reviewer through the changes in logical narrative order, then renders it as an interactive web app where the reviewer can read every line of code, track their progress, and interact with GitHub (comments, approvals).
+An AI-narrated interactive code review tool. Takes a PR diff, uses Claude or Codex to generate a structured walkthrough that guides the reviewer through the changes in logical narrative order, then renders it as an interactive web app where the reviewer can read every line of code, track their progress, and interact with GitHub (comments, approvals).
 
 ## Core Principle
 
@@ -24,7 +24,7 @@ An AI-narrated interactive code review tool. Takes a PR diff, uses Claude to gen
 ┌─────────────────────────────────────────────────┐
 │  CLI Generator (src/generate.js)                │
 │  - Fetches PR data + git history via gh CLI     │
-│  - Sends diff + commit/churn/age data to Claude │
+│  - Sends diff + history to Claude or Codex     │
 │  - Outputs structured JSON                      │
 └──────────────────────┬──────────────────────────┘
                        │ walkthrough-data.json
@@ -62,9 +62,9 @@ src/
   generate.js              — CLI walkthrough generator (Node-side)
   resolve-info-tips.js     — CLI background resolver, invoked by generate.js after
                              writing the walkthrough when review_tips have
-                             `pending: true` entries. Uses Anthropic tool-use with
-                             grep / read_file / list_files against the target repo.
-                             Each tip gets up to MAX_TOOL_ROUNDS (30) tool rounds.
+                             pending or blocked entries. Every tip is checked by
+                             Codex against full code in a disposable worktree, with
+                             focused local tests and a ten-minute total per-tip deadline.
   styles.css               — All styles (unchanged from pre-Preact)
   components/
     App.jsx                — Root: auto-loads data, keyboard handler, layout router
@@ -97,15 +97,17 @@ interface Walkthrough {
   architecture_diagram: string;  // mermaid
   sections: Section[];
   file_map: FileMapEntry[];
-  review_tips: ReviewTip[] | string[];  // objects after verification; plain strings pre-verification
+  review_tips: ReviewTip[] | string[];  // generated concerns, then persisted investigation results
 }
 
 interface ReviewTip {
   tip: string;                   // the original concern text
   status: 'verified' | 'concern' | 'info';
   finding: string;               // evidence with file:line references
-  pending?: true;                // set while background resolver is investigating;
-                                 //   removed once resolved (viewer polls until absent)
+  pending?: boolean;            // true while queued/running; false for complete/blocked
+  resolved?: boolean;           // complete investigation, not necessarily a fixed concern
+  investigationState?: 'running' | 'complete' | 'blocked';
+  evidence?: { files: string[]; tests: Array<{ command: string; outcome: 'passed' | 'failed' | 'not-run'; detail: string }> };
 }
 
 interface Section {
@@ -138,7 +140,9 @@ The generator bundles the walkthrough with raw data and metadata:
 
 ```typescript
 interface WalkthroughData {
-  meta: { source, owner, repo, number, title, url, baseBranch, headBranch, headSha, additions, deletions, changedFiles, generatedAt };
+  meta: { source, owner, repo, number, title, url, baseBranch, headBranch, baseSha, headSha,
+          provenance, repositoryPath, generationId, configFingerprint, inputHash, modelTasks,
+          additions, deletions, changedFiles, generatedAt, aiProvider };
   walkthrough: Walkthrough;
   diff: string;
   comments: Comment[];      // GitHub review comments
@@ -249,7 +253,7 @@ The system prompt follows a structural change philosophy inspired by difftastic:
 | Developer | Monospace, compact, dark mode forced |
 | Dashboard | Grid of section cards for quick overview, click to drill in |
 
-## Current State (2026-03-11)
+## Current State (2026-09-30)
 
 ### Working
 - CLI generation from GitHub PRs, local diffs, patch files
@@ -261,8 +265,9 @@ The system prompt follows a structural change philosophy inspired by difftastic:
 - Mark reviewed auto-collapses section and scrolls to header
 - Mermaid diagrams, callouts, importance badges
 - Click-to-zoom pan/zoom overlay for architecture diagrams (works in Preact viewer and in static HTML export)
-- Verified review tips: post-generation pass classifies each tip as verified/concern/info with evidence
-- Background resolver for info-status tips: detached Node process investigates the target repo using Claude tool-use (grep/read_file/list_files), rewrites walkthrough JSON per tip as it resolves; viewer polls every 4s while any tip has `pending: true`. Up to 30 tool rounds per tip (was 10) so investigations of multi-callsite concerns finish instead of timing out
+- Automatic review-tip checks: every tip runs through Codex full-code investigation, regardless of walkthrough provider. Private worktrees isolate dependency setup and local tests from the invoking checkout. A result is verified/concern with completed evidence, or blocked and unresolved with a reason. Pending/blocked checks retry on the next review invocation. Investigations use a pool of three, up to two Codex turns and a ten-minute total per-tip deadline (`REVIEW_TIP_TIMEOUT_MS`, bounded 1–1800 seconds). File references and test command/outcome/detail are persisted as evidence.
+- Generation-bound publication: locked atomic JSON writes prevent truncated reads and stale verdicts overwriting newer reviews. The viewer polls every 4s while tips are pending, retries transient fetch/parse failures, and requests reload if the generation changes.
+- Grounded section chat: the server reads the stored generation/section and actual diff hunks, validates request identity and streams provider output. Local endpoints use bounded requests, origin checks, supported GitHub operation allowlists and asynchronous shell-free commands.
 - Walkthroughs middleware (vite.config.js `walkthroughsEndpoint`): serves `/walkthroughs/*.json` and `/walkthrough-data.json` from disk on every request, ahead of Vite's static handler. Lets newly generated walkthroughs load without restarting the dev server (Vite's static handler caches the `public/` listing at startup, otherwise serving the SPA's `index.html` for unseen JSON files)
 - GitHub comment display with syntax-highlighted code blocks (highlight.js)
 - Comment composer, approve/request changes modal
@@ -287,9 +292,11 @@ The system prompt follows a structural change philosophy inspired by difftastic:
 - Hunk-level diff filtering: only shows referenced line ranges, not full file diffs
 - Interleaved annotations: each annotation appears above its matching diff hunk
 - "Open PR on GitHub" action for quick navigation to the source PR
-- Stale review banner: on view, fetches current PR head; if it differs from `meta.headSha`, calls GitHub `compare/{old}...{new}` and renders the new commits (sha, message, author) plus +/-/file totals so reviewers can decide whether re-running is worth it. Generator brackets `gh pr diff` with a verifying `gh pr view` and warns if the head SHA changed mid-fetch (diff/SHA can disagree without this check).
-- Incremental re-review: when the cached walkthrough's `meta.headSha` differs from the current head but `meta.headBranch` matches, the generator computes the delta via `gh api compare/{oldSha}...{newSha}` (GitHub mode) or `git diff oldSha..newSha` (local mode). Empty delta short-circuits to cached walkthrough verbatim. Small delta (≤30KB, ≤8 affected files) triggers patch mode: prompt contains only the delta diff + previous walkthrough + affected file list; Claude returns a JSON patch (`updated_sections` keyed by stable `section.id`, `added_sections`, `removed_section_ids`, `file_map_changes: {added, removed, updated}`, optional `architecture_diagram`, full `review_tips` replacement) merged by `applyWalkthroughPatch`. Output is typically 500–2000 tokens vs ~18000 for a full regen. Patch-mode failures (parse error, network error, throw) auto-fall-back to full regen.
-- JSON parse resilience: malformed Claude responses are recovered through (1) local position-based repair (trailing-comma strip, then iterative escape of unescaped `"`/`\n`/`\r`/`\t` inside string literals based on `JSON.parse` error offset, plus missing-comma insertion heuristic), then (2) Haiku 4.5 "fix syntax only" repair pass. The raw response is dumped to `logs/failed-response-<timestamp>.txt` on any failure so a 5-minute generation is never silently lost.
+- Stale review banner: on view, fetches current PR head; if it differs from `meta.headSha`, displays new commits and diff totals. Generation checks both base and head after fetching the diff, retries moving revisions up to three times and fails if it cannot establish a stable snapshot.
+- Input-aware cache: reuse requires matching source/input provenance, base/head revisions, title/body, provider, task model/effort configuration and prompt version. Cache hits retain generation identity/time and refresh comments/reviews; older caches regenerate once. Local reviews cover committed HEAD, excluding dirty changes; patch paths resolve from the invoking directory and cache identity includes their path/content. `--diff` investigation reconstructs a best-effort private worktree from invoking committed HEAD plus the stored patch (or confirms the patch already exists with a reverse check); original patch-base provenance remains unknown, and unsafe reconstruction blocks the check.
+- Incremental re-review: a linear head advance on the same source, branch, base and configuration can use the delta against the cached head. A rewind/divergent head triggers full generation. An eligible empty delta reuses the narrative under a new generation with tip checks repeated. Small deltas (≤30KB, ≤8 affected files) use a JSON patch from the selected provider, merged by `applyWalkthroughPatch` and validated against the current full diff. Larger/unavailable deltas and invalid patches fall back to full generation.
+- Structured output: both providers receive schemas; local semantic validation checks unique section identifiers and hunk endpoints against the real diff (old-side for deleted files), and derives complete file coverage. Malformed responses first use local syntax repair, then the provider's repair task (Claude defaults to Haiku 4.5). Failed responses are retained under `logs/`.
+- Explicit task configuration: Codex defaults to `gpt-6.1-sol`; Claude defaults to `claude-opus-5-5`. Chat uses low effort, generation/patch use medium, and full-code investigations use high. Per-task environment overrides beat provider-wide settings. These defaults are not a comparative live-model benchmark; see README configuration for details and execution limitations.
 
 ### Remaining Gaps
 1. No streaming generation / in-browser generation
