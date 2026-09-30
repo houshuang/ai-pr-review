@@ -1,7 +1,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -24,9 +24,11 @@ let binWithCodex;
 let emptyBin;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "provider-config-test-"));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "provider-config-test-")));
   toolRoot = join(dir, "tool");
-  mkdirSync(toolRoot);
+  mkdirSync(join(toolRoot, "src"), { recursive: true });
+  copyFileSync(CLI, join(toolRoot, "src", "provider-config.js"));
+  writeFileSync(join(toolRoot, "package.json"), '{"type":"module"}');
   binWithCodex = join(dir, "bin");
   mkdirSync(binWithCodex);
   writeFileSync(join(binWithCodex, "codex"), "#!/bin/sh\n");
@@ -159,7 +161,7 @@ test("the status line names the provider, why, and how to change it", () => {
 
 test("CLI never blocks without a TTY and reports provider on stdout", () => {
   const run = (args, extra = {}) =>
-    spawnSync(process.execPath, [CLI, ...args], {
+    spawnSync(process.execPath, [join(toolRoot, "src", "provider-config.js"), ...args], {
       env: { ...env(extra), HOME: dir },
       input: "",
       encoding: "utf-8",
