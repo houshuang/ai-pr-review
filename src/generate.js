@@ -1348,7 +1348,7 @@ async function main() {
 
   if (!forceRegenerate && canReuseCache(cached, prData, CONFIG_FINGERPRINT)) {
     // Same SHA — reuse walkthrough, just refresh comments/reviews/git history
-    console.log(`\n✓ Cache hit — SHA ${prData.headSha.slice(0, 7)} unchanged`);
+    console.log(`\n✓ Cache hit — ${prData.headSha ? `SHA ${prData.headSha.slice(0, 7)}` : "patch content"} unchanged`);
     console.log("  Refreshing comments and reviews...");
     walkthrough = cached.walkthrough;
   } else if (!forceRegenerate && canPatchCache(cached, prData, CONFIG_FINGERPRINT)) {
