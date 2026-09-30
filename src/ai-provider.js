@@ -176,7 +176,7 @@ export async function runCodex({
     "--enable", "skip_host_skill_discovery",
   ];
   if (sandbox === "workspace-write") {
-    args.push("-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=true");
+    args.push("-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=true", "-c", "sandbox_workspace_write.exclude_slash_tmp=true");
   }
   if (task !== "investigation") args.push("--disable", "shell_tool", "--disable", "shell_snapshot");
   // Untrusted roots skip project .codex layers. Keep CODEX_HOME for existing auth.
@@ -262,7 +262,7 @@ export async function runCodex({
           if (pending) reader.accept(pending);
           const { usage, failure, failedTurn } = reader.result();
           if (spawnError?.code === "ENOENT") {
-            const missing = new Error("Codex CLI not found. Install it or run with --claude.");
+            const missing = new Error("Codex CLI not found. Install Codex and run `codex login` to enable full-code review checks.");
             missing.codexSetupFailure = true;
             reject(missing);
           } else if (spawnError) reject(spawnError);

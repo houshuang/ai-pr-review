@@ -65,9 +65,10 @@ let prompt = '';
 process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => prompt += chunk);
 process.stdin.on('end', () => {
   const schema = JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema') + 1], 'utf8'));
-  const task = schema.required.includes('updated_sections') ? 'patch' : 'generation';
+  const task = schema.required.includes('status') ? 'investigation' : schema.required.includes('updated_sections') ? 'patch' : 'generation';
   record(task, {prompt, cwd: process.cwd()});
-  fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], JSON.stringify(state[task === 'patch' ? 'patch' : 'walkthrough']));
+  const result = task === 'investigation' ? {status:'verified',finding:'example.js:1 contains the expected change',evidence:{files:['example.js:1'],tests:[{command:'static inspection',outcome:'not-run',detail:'The exported constant is directly visible in the source'}]}} : state[task === 'patch' ? 'patch' : 'walkthrough'];
+  fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], JSON.stringify(result));
   console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,output_tokens:50}}));
 });
 `, { mode: 0o755 });
@@ -96,6 +97,36 @@ process.stdin.on('end', () => {
 
 function succeeded(result) { assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`); }
 function count(f, kind) { return f.calls().filter(call => call.kind === kind).length; }
+
+test("whole generator resumes blocked cached tips automatically and retains completed checks", async t => {
+  const f = fixture(t);
+  execFileSync("git", ["init", "-b", "main"], { cwd: f.invoking, stdio: "ignore" });
+  const git = (...args) => execFileSync("git", args, { cwd: f.invoking, stdio: "ignore" });
+  git("config", "user.email", "fixture@example.invalid"); git("config", "user.name", "Fixture");
+  writeFileSync(join(f.invoking, "example.js"), "export const value = 1;\n");
+  git("add", "."); git("commit", "-m", "base"); git("checkout", "-b", "feature");
+  writeFileSync(join(f.invoking, "example.js"), "export const value = 2;\n");
+  git("add", "."); git("commit", "-m", "change");
+  succeeded(await f.run(["--local"]));
+  const cachePath = join(f.tool, "public", "walkthroughs", readdirSync(join(f.tool, "public", "walkthroughs"))[0]);
+  const cached = f.output();
+  cached.walkthrough.review_tips = [{tip:"Check the exported constant",status:"info",resolved:false,investigationState:"blocked",finding:"Prior unavailable runtime"}];
+  writeFileSync(cachePath, JSON.stringify(cached));
+  succeeded(await f.run(["--local"]));
+  let complete;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    complete = JSON.parse(readFileSync(cachePath, "utf8"));
+    if (complete.walkthrough.review_tips[0].investigationState === "complete") break;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.equal(complete.walkthrough.review_tips[0].investigationState, "complete", JSON.stringify(complete));
+  assert.equal(complete.meta.generationId, cached.meta.generationId);
+  assert.equal(count(f, "generation"), 1);
+  assert.equal(count(f, "investigation"), 1);
+  succeeded(await f.run(["--local"]));
+  assert.equal(count(f, "investigation"), 1);
+  assert.equal(f.output().walkthrough.review_tips[0].investigationState, "complete");
+});
 
 test("whole generator publishes validated coverage and reuses exact cache without diff/history/model calls", async t => {
   const f = fixture(t);

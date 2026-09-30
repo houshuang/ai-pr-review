@@ -15,7 +15,7 @@ import Anthropic, {
   InternalServerError,
 } from "@anthropic-ai/sdk";
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, openSync } from "fs";
-import { execFileSync, execSync, spawn, exec as execCb } from "child_process";
+import { execFileSync, spawn, execFile } from "child_process";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { promisify } from "util";
@@ -23,7 +23,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { sanitizeWalkthroughDiagrams } from "./mermaid-sanitize.js";
 import { getTaskConfig } from "./models.js";
-import { writeReviewFile, acquireFileLock } from "./review-storage.js";
+import { writeReviewFile, acquireFileLock, shouldInvestigateTip } from "./review-storage.js";
 import { WALKTHROUGH_SCHEMA, PATCH_SCHEMA, validateWalkthrough, validatePatch } from "./walkthrough-schema.js";
 import { canReuseCache, canPatchCache, configFingerprint, inputHash, hash } from "./cache-policy.js";
 import { fetchLocalDiff, readDiffFile } from "./local-input.js";
@@ -34,8 +34,12 @@ import { Agent as UndiciAgent } from "undici";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AI_PROVIDER = resolveAIProvider();
-const execAsync = promisify(execCb);
-const MODEL_TASKS = Object.fromEntries(["generation", "patch", "verification", "investigation"].map((task) => [task, getTaskConfig(AI_PROVIDER, task)]));
+const execAsync = promisify(execFile);
+const GH_OPTIONS = { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024, timeout: 30000 };
+const MODEL_TASKS = {
+  generation: getTaskConfig(AI_PROVIDER, "generation"), patch: getTaskConfig(AI_PROVIDER, "patch"),
+  investigation: { provider: "codex", ...getTaskConfig("codex", "investigation") },
+};
 const CONFIG_FINGERPRINT = configFingerprint(AI_PROVIDER, MODEL_TASKS);
 
 // Run fn over items with bounded concurrency, preserving order of results.
@@ -381,13 +385,13 @@ function loadEnvKey() {
 
 async function fetchGitHistory(owner, repo, number, pr) {
   const result = { commits: [], fileAges: {}, churn: {} };
-  const execOpts = { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 };
+  const execOpts = GH_OPTIONS;
 
   // 1. Fetch detailed commits in the PR
   let commits = [];
   try {
     const { stdout: commitsJson } = await execAsync(
-      `gh api repos/${owner}/${repo}/pulls/${number}/commits --paginate`,
+      "gh", ["api", `repos/${owner}/${repo}/pulls/${number}/commits`, "--paginate"],
       execOpts
     );
     commits = JSON.parse(commitsJson);
@@ -407,7 +411,7 @@ async function fetchGitHistory(owner, repo, number, pr) {
   // dominated pre-generation time on multi-commit PRs).
   const churnTask = mapPool(commits, 8, async (c) => {
     try {
-      const { stdout } = await execAsync(`gh api repos/${owner}/${repo}/commits/${c.sha}`, execOpts);
+      const { stdout } = await execAsync("gh", ["api", `repos/${owner}/${repo}/commits/${c.sha}`], execOpts);
       return JSON.parse(stdout);
     } catch {
       return null; // Skip commits we can't fetch details for
@@ -431,7 +435,7 @@ async function fetchGitHistory(owner, repo, number, pr) {
   const agesTask = mapPool(changedFiles, 8, async (filePath) => {
     try {
       const { stdout: historyJson } = await execAsync(
-        `gh api "repos/${owner}/${repo}/commits?path=${encodeURIComponent(filePath)}&sha=${pr.baseRefOid}&per_page=1"`,
+        "gh", ["api", `repos/${owner}/${repo}/commits?path=${encodeURIComponent(filePath)}&sha=${pr.baseRefOid}&per_page=1`],
         execOpts
       );
       const history = JSON.parse(historyJson);
@@ -469,9 +473,9 @@ async function fetchPRDataOnce(prUrl) {
   console.log(`Fetching PR #${number} from ${owner}/${repo}...`);
 
   // Use gh CLI to fetch PR data
-  const prJson = execSync(
-    `gh pr view ${number} --repo ${owner}/${repo} --json title,body,url,baseRefName,baseRefOid,headRefName,headRefOid,additions,deletions,changedFiles,commits,files`,
-    { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
+  const prJson = execFileSync(
+    "gh", ["pr", "view", number, "--repo", `${owner}/${repo}`, "--json", "title,body,url,baseRefName,baseRefOid,headRefName,headRefOid,additions,deletions,changedFiles,commits,files"],
+    GH_OPTIONS
   );
   const pr = JSON.parse(prJson);
   if (!/^[a-f0-9]{40}$/.test(pr.headRefOid) || !/^[a-f0-9]{40}$/.test(pr.baseRefOid)) throw new Error("PR is missing immutable revision IDs");
@@ -492,8 +496,8 @@ async function fetchPRDataOnce(prUrl) {
   async function fetchDiff() {
     try {
       const { stdout } = await execAsync(
-        `gh pr diff ${number} --repo ${owner}/${repo}`,
-        { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
+        "gh", ["pr", "diff", number, "--repo", `${owner}/${repo}`],
+        { ...GH_OPTIONS, timeout: 120000 }
       );
       return stdout;
     } catch (diffErr) {
@@ -523,8 +527,8 @@ async function fetchPRDataOnce(prUrl) {
     if (!pr.headRefOid) return;
     {
       const { stdout: verifyJson } = await execAsync(
-        `gh pr view ${number} --repo ${owner}/${repo} --json headRefOid,baseRefOid`,
-        { encoding: "utf-8" }
+        "gh", ["pr", "view", number, "--repo", `${owner}/${repo}`, "--json", "headRefOid,baseRefOid"],
+        GH_OPTIONS
       );
       const verify = JSON.parse(verifyJson);
       if (verify.headRefOid !== pr.headRefOid || verify.baseRefOid !== pr.baseRefOid) {
@@ -544,15 +548,15 @@ async function fetchPRDataOnce(prUrl) {
       return d;
     }),
     execAsync(
-      `gh api repos/${owner}/${repo}/pulls/${number}/comments --paginate`,
-      { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
+      "gh", ["api", `repos/${owner}/${repo}/pulls/${number}/comments`, "--paginate"],
+      GH_OPTIONS
     ).then((r) => JSON.parse(r.stdout)).catch(() => {
       console.warn("Could not fetch review comments");
       return [];
     }),
     execAsync(
-      `gh api repos/${owner}/${repo}/pulls/${number}/reviews --paginate`,
-      { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
+      "gh", ["api", `repos/${owner}/${repo}/pulls/${number}/reviews`, "--paginate"],
+      GH_OPTIONS
     ).then((r) => JSON.parse(r.stdout)).catch(() => {
       console.warn("Could not fetch reviews");
       return [];
@@ -634,8 +638,8 @@ The output must be valid JSON matching this schema:
       "hunks": [
         {
           "file": "string - file path exactly as it appears in the diff",
-          "startLine": "number - start line in the NEW file (right side of diff)",
-          "endLine": "number - end line in the NEW file",
+          "startLine": "number - start line in the NEW file, or OLD file for a deleted file",
+          "endLine": "number - end line in the NEW file, or OLD file for a deleted file",
           "annotation": "string - describe the CHANGE, not the resulting code. Bad: 'Exports configuration modules'. Good: 'Replaces the monolithic export with individual module re-exports, establishing the composable pattern used by all renderers'. Focus on the delta.",
           "importance": "critical|important|supporting|context"
         }
@@ -958,7 +962,7 @@ Generate the walkthrough JSON. Important reminders:
   // Fix common Mermaid syntax issues (e.g. unquoted pipes in node labels)
   sanitizeWalkthroughDiagrams(walkthrough);
 
-  // Tip verification happens in the background resolver so the viewer opens
+  // Full-code tip investigation happens in the background so the viewer opens
   // immediately — mark every tip pending; the viewer polls as they resolve.
   if (walkthrough.review_tips?.length) {
     walkthrough.review_tips = walkthrough.review_tips.map((t) =>
@@ -1067,8 +1071,7 @@ function applyWalkthroughPatch(prev, patch) {
     if (typeof patch[k] === "string" && patch[k].trim()) next[k] = patch[k];
   }
 
-  // Review tips: full replacement when provided. Pass plain strings — verification
-  // re-runs against the full PR diff downstream.
+  // Review tips are replaced as strings so full-code checks rerun for the new generation.
   if (Array.isArray(patch.review_tips)) {
     next.review_tips = patch.review_tips;
   }
@@ -1127,9 +1130,12 @@ Output ONLY a JSON patch with the minimum changes. Do not return the full walkth
   "file_map_changes": {
     "added":   [ { "path": "...", "description": "...", "is_new": true } ],
     "removed": ["path-no-longer-in-pr"],
-    "updated": [ { "path": "...", "description": "..." } ]
+    "updated": [ { "path": "...", "description": "...", "is_new": false } ]
   },
-  "architecture_diagram": "OPTIONAL — only if the structural picture meaningfully changed",
+  "architecture_diagram": null,
+  "title": null,
+  "subtitle": null,
+  "overview": null,
   "review_tips": ["plain string tips covering both previously-found AND newly-introduced issues"]
 }
 \`\`\`
@@ -1139,11 +1145,13 @@ Output ONLY a JSON patch with the minimum changes. Do not return the full walkth
 - Only touch a section if at least one of its hunks references a file in the AFFECTED FILES list. Unaffected sections MUST be omitted from the patch entirely.
 - When updating a section, return the FULL section object (same schema as the original), not a partial diff. Preserve the existing \`id\` exactly.
 - New sections need new unique kebab-case ids (do not collide with existing ones).
-- If no sections need changes, omit the array (or return empty).
+- If no sections need changes, return empty arrays.
+- Include every schema field; use null for unchanged title, subtitle, overview and architecture_diagram.
 - file_map_changes: only include the delta — files unaffected by the delta should NOT appear.
-- review_tips: full replacement as plain strings — verification re-runs downstream.
+- review_tips: full replacement as plain strings — full-code investigation re-runs downstream.
 - Mermaid: same rules as the base prompt (TD by default, quoted labels for special chars, no \`\`\`mermaid fences, ASCII arrows only).
 - Annotations describe the CHANGE, not the resulting code.
+- Hunk line ranges use NEW file numbers, or OLD file numbers for deleted files.
 
 If the delta is trivial (formatting, comments only) you may return an essentially empty patch (no section changes).`;
 
@@ -1242,7 +1250,7 @@ Return ONLY the JSON patch. Include all schema fields, using empty arrays and nu
   const merged = applyWalkthroughPatch(previousWalkthrough, patch);
   validateWalkthrough(merged, prData.diff);
 
-  // Mermaid sanitize + defer tip verification to the background resolver
+  // Mermaid sanitize + defer full-code tip checks to the background resolver
   sanitizeWalkthroughDiagrams(merged);
   if (merged.review_tips?.length) {
     merged.review_tips = merged.review_tips.map((t) =>
@@ -1398,6 +1406,11 @@ async function main() {
 
   validateWalkthrough(walkthrough, prData.diff);
   const reused = !forceRegenerate && canReuseCache(cached, prData, CONFIG_FINGERPRINT);
+  const retryTips = reused ? structuredClone((walkthrough.review_tips || []).filter(shouldInvestigateTip)) : [];
+  walkthrough.review_tips = (walkthrough.review_tips || []).map((tip) => {
+    if (!reused) return { tip: typeof tip === "string" ? tip : tip.tip, pending: true };
+    return shouldInvestigateTip(tip) ? { ...(typeof tip === "string" ? { tip } : tip), pending: true } : tip;
+  });
 
   // Bundle the walkthrough with the raw diff and PR metadata
   const output = {
@@ -1432,24 +1445,21 @@ async function main() {
   };
 
   // Write to per-PR file
-  await writeReviewFile(perPrPath, output);
+  await writeReviewFile(perPrPath, output, { retryTips });
 
   // Also write to default location for backward compat
   const defaultPath = resolve(__dirname, "..", "public", "walkthrough-data.json");
-  await writeReviewFile(defaultPath, output);
+  await writeReviewFile(defaultPath, output, { retryTips });
 
   console.log(`\nWalkthrough data written to ${perPrPath}`);
   console.log(`Slug: ${slug}`);
   console.log(`Open: http://localhost:5200/?pr=${slug}`);
 
-  // Launch the background resolver: it verifies every pending tip against
-  // the diff, then investigates the unresolved ones in the actual codebase.
-  // It keeps running after we exit, updating the JSON as tips resolve — the
-  // viewer polls and re-renders.
+  // The resolver continues after the viewer opens; each tip uses a private worktree.
   const pendingCount = (walkthrough.review_tips || []).filter(
     (t) => typeof t === "object" && t.pending
   ).length;
-  if (pendingCount > 0 && (AI_PROVIDER === "codex" || process.env.ANTHROPIC_API_KEY || loadEnvKey())) {
+  if (pendingCount > 0) {
     // Use the user's original cwd (where `review` was invoked). bin/review cd's
     // into REVIEW_TOOL_DIR before spawning us but preserves the original here.
     const repoPath = process.env.REVIEW_ORIGINAL_CWD || process.cwd();
@@ -1458,10 +1468,10 @@ async function main() {
     const child = spawn(process.execPath, [resolverPath, slug, repoPath], {
       detached: true,
       stdio: ["ignore", resolverLog, resolverLog],
-      env: { ...process.env, REVIEW_AI_PROVIDER: AI_PROVIDER },
+      env: { ...process.env, REVIEW_AI_PROVIDER: "codex" },
     });
     child.unref();
-    console.log(`\n⟳ Verifying ${pendingCount} review tip${pendingCount === 1 ? "" : "s"} in the background (pid ${child.pid})`);
+    console.log(`\n⟳ Codex is investigating ${pendingCount} review tip${pendingCount === 1 ? "" : "s"} against the full code in the background (pid ${child.pid})`);
     console.log(`  The viewer will update automatically as results arrive.`);
   }
 }
