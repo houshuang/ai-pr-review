@@ -1,7 +1,8 @@
 import { h } from "preact";
 import { useRef, useEffect } from "preact/hooks";
 import { diff2htmlHtml } from "../diff";
-import { getBlockEndLines } from "../diff";
+import { getBlockEndLines, blockLayout } from "../diff";
+import { observeSideBySideRows } from "../diff-rows";
 import { expandContext } from "../api";
 import { isGitHubPR, findFile, showFullFile, toggleSet, parsedFiles } from "../state";
 import { esc, md, linkFileRefs } from "../utils";
@@ -40,9 +41,10 @@ function highlightDiffCode(container, filePath) {
 function injectInlineAnnotations(container, fileHunks) {
   if (!fileHunks) return;
 
-  // Build map of new-file line numbers to their <tr> elements.
-  // Unified (line-by-line) mode uses .line-num2 divs; side-by-side uses the
-  // right table's .d2h-code-side-linenumber td text directly.
+  // Build map of new-file line numbers to their <tr> elements. Each block picks
+  // its own layout, so one file can mix both: unified blocks use .line-num2 divs;
+  // side-by-side blocks (one .d2h-files-diff each) use the right table's
+  // .d2h-code-side-linenumber td text.
   const lineToRow = new Map();
   container.querySelectorAll(".line-num2").forEach((el) => {
     const num = parseInt(el.textContent);
@@ -51,30 +53,21 @@ function injectInlineAnnotations(container, fileHunks) {
       if (row) lineToRow.set(num, row);
     }
   });
-
-  // Side-by-side fallback: each block is a separate .d2h-files-diff — query all of them
-  const isSideBySide = lineToRow.size === 0;
-  if (isSideBySide) {
-    container.querySelectorAll(".d2h-files-diff").forEach((filesDiff) => {
-      const sides = filesDiff.querySelectorAll(".d2h-file-side-diff");
-      const rightSide = sides[sides.length - 1]; // last child = new-file table
-      if (!rightSide) return;
-      rightSide.querySelectorAll(".d2h-code-side-linenumber").forEach((el) => {
-        const num = parseInt(el.textContent.trim());
-        if (!isNaN(num) && num > 0) {
-          const row = el.closest("tr");
-          if (row) lineToRow.set(num, row);
-        }
-      });
+  container.querySelectorAll(".d2h-files-diff").forEach((filesDiff) => {
+    const sides = filesDiff.querySelectorAll(".d2h-file-side-diff");
+    const rightSide = sides[sides.length - 1]; // last child = new-file table
+    if (!rightSide) return;
+    rightSide.querySelectorAll(".d2h-code-side-linenumber").forEach((el) => {
+      const num = parseInt(el.textContent.trim());
+      if (!isNaN(num) && num > 0) {
+        const row = el.closest("tr");
+        if (row) lineToRow.set(num, row);
+      }
     });
-  }
+  });
 
   if (lineToRow.size === 0) return;
   const lineNums = [...lineToRow.keys()].sort((a, b) => a - b);
-
-  // Detect column count from existing rows
-  const sampleRow = lineToRow.values().next().value;
-  const colCount = sampleRow ? sampleRow.querySelectorAll("td").length : 2;
 
   for (const hunk of fileHunks) {
     if (!hunk.annotation) continue;
@@ -94,6 +87,8 @@ function injectInlineAnnotations(container, fileHunks) {
 
     const row = lineToRow.get(targetLineNum);
     if (!row) continue;
+    const isSideBySide = !!row.closest(".d2h-file-side-diff");
+    const colCount = row.querySelectorAll("td").length || 2;
 
     // If no more changed lines follow in this diff block, push the annotation
     // to the end of the block so it doesn't interrupt trailing context rows.
@@ -126,7 +121,7 @@ function injectInlineAnnotations(container, fileHunks) {
 
     // In side-by-side mode, mirror a styled spacer into the left (old-file) table
     // so the two tables stay vertically aligned and the annotation looks full-width.
-    // Height is synced after layout via rAF to prevent row misalignment below.
+    // observeSideBySideRows gives the spacer the annotation's height.
     if (isSideBySide) {
       const filesDiff = row.closest(".d2h-files-diff");
       const leftSide = filesDiff?.querySelector(".d2h-file-side-diff");
@@ -145,10 +140,6 @@ function injectInlineAnnotations(container, fileHunks) {
           spacerTd.appendChild(spacerDiv);
           spacerRow.appendChild(spacerTd);
           leftRow.after(spacerRow);
-          requestAnimationFrame(() => {
-            const h = annotationRow.getBoundingClientRect().height;
-            if (h > 0) spacerDiv.style.minHeight = `${h}px`;
-          });
         }
       }
     }
@@ -177,6 +168,8 @@ export function DiffView({ file, mode, filePath, hunkKey, fileHunks, showExpandB
     // Inject annotations inline at the right line positions
     injectInlineAnnotations(containerRef.current, fileHunks);
 
+    const stopRowSync = observeSideBySideRows(containerRef.current);
+
     // Attach expand context click handlers via event delegation
     const handler = async (e) => {
       const bar = e.target.closest("[data-expand-file]");
@@ -201,6 +194,7 @@ export function DiffView({ file, mode, filePath, hunkKey, fileHunks, showExpandB
 
     containerRef.current.addEventListener("click", handler);
     return () => {
+      stopRowSync();
       if (containerRef.current) {
         containerRef.current.removeEventListener("click", handler);
       }
@@ -210,17 +204,7 @@ export function DiffView({ file, mode, filePath, hunkKey, fileHunks, showExpandB
   return <div ref={containerRef} className="diff-view-container" />;
 }
 
-function hasNoDeletions(file) {
-  if (!file.blocks || !file.blocks.length) return false;
-  return file.blocks.every(block =>
-    block.lines.every(line => line.type !== "delete")
-  );
-}
-
 function buildDiffHtml(file, mode, filePath, hunkKey, showExpandBars) {
-  // Add-only chunks (no deletions) → force unified to avoid empty left pane
-  if (mode !== "unified" && hasNoDeletions(file)) mode = "unified";
-
   const blocks = file.blocks;
   if (!blocks || !blocks.length) {
     return diff2htmlHtml([file], {
@@ -254,7 +238,7 @@ function buildDiffHtml(file, mode, filePath, hunkKey, showExpandBars) {
     html += diff2htmlHtml([singleBlockFile], {
       drawFileList: false,
       matching: "lines",
-      outputFormat: mode === "unified" ? "line-by-line" : "side-by-side",
+      outputFormat: blockLayout(block, mode) === "unified" ? "line-by-line" : "side-by-side",
     });
   }
 
