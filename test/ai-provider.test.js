@@ -29,3 +29,30 @@ test("bare branch names are told apart from URLs and flags", () => {
   assert.equal(looksLikeBranchName("github.com/o/r/pull/1"), false);
   assert.equal(looksLikeBranchName("--local"), false);
 });
+
+test("runCodex reports Codex's exit instead of EPIPE when it quits before reading the prompt", async () => {
+  const { mkdtempSync, writeFileSync, chmodSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { runCodex } = await import("../src/ai-provider.js");
+
+  const binDir = mkdtempSync(join(tmpdir(), "fake-codex-"));
+  const fake = join(binDir, "codex");
+  writeFileSync(fake, "#!/bin/sh\necho 'Error: not logged in' >&2\nexit 1\n");
+  chmodSync(fake, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${originalPath}`;
+  try {
+    await assert.rejects(
+      runCodex({ userPrompt: "x".repeat(4 * 1024 * 1024) }),
+      (err) => {
+        assert.match(err.message, /Codex exited with code 1/);
+        assert.match(err.message, /not logged in/);
+        return true;
+      }
+    );
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
