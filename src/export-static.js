@@ -10,6 +10,7 @@ import { resolve, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { html as diff2htmlHtml, parse as diff2htmlParse } from "diff2html";
 import { blockLayout } from "./diff.js";
+import { syncSideBySideRows, observeSideBySideRows } from "./diff-rows.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -611,6 +612,11 @@ if (window.hljs) {
     hljs.highlightElement(el);
   });
 }
+
+// ── Side-by-side row alignment — src/diff-rows.js ──
+${syncSideBySideRows.toString()}
+${observeSideBySideRows.toString()}
+document.querySelectorAll(".hunk-diff").forEach(observeSideBySideRows);
 
 // ── Mermaid — same logic as src/mermaid.js renderMermaidIn ──
 function sanitizeMermaid(src) {

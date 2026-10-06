@@ -1067,9 +1067,9 @@ html.dark .mermaid-zoom-canvas {
   border-radius: 0;
 }
 
+/* No inner scroll box: the diff scrolls with the page so the sticky file
+   header above it stays in view. */
 .hunk-diff {
-  max-height: 700px;
-  overflow: auto;
   position: relative;
 }
 
@@ -1542,9 +1542,43 @@ html.dark .load-error-banner {
   word-break: normal !important;
 }
 
-/* In side-by-side mode, don't wrap — allow horizontal scroll per pane */
+/* Side-by-side wraps too, with the same table-cell line numbers as unified.
+   syncSideBySideRows (src/diff-rows.js) keeps the two panes' rows aligned. */
+.d2h-file-side-diff {
+  overflow-x: hidden !important;
+}
+
+.d2h-file-side-diff .d2h-diff-table {
+  table-layout: fixed;
+  width: 100% !important;
+}
+
+.d2h-file-side-diff .d2h-code-side-linenumber {
+  display: table-cell !important;
+  position: static !important;
+  width: 4em !important;
+  vertical-align: top;
+  white-space: nowrap;
+  text-align: right;
+  padding: 0 0.5em !important;
+}
+
+.d2h-file-side-diff .d2h-code-side-line {
+  display: flex !important;
+  padding: 0 0.5em !important;
+  width: auto !important;
+}
+
+.d2h-file-side-diff .d2h-code-line-prefix {
+  flex-shrink: 0;
+  width: 1.5ch;
+}
+
 .d2h-file-side-diff .d2h-code-line-ctn {
-  white-space: pre !important;
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
   word-break: normal !important;
 }
 
@@ -2123,7 +2157,10 @@ html.dark .sidebar-panel { background: #1a1a1a; }
 .sidebar-fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-fstats { color: var(--ink-faint); font-size: 10px; flex-shrink: 0; }
 
-.sidebar-main { overflow-y: auto; }
+/* The page scrolls, not this column. overflow-x: clip contains wide diffs
+   without making the column a scroll container, which would stop the file
+   headers from sticking to the viewport. */
+.sidebar-main { min-width: 0; overflow-x: clip; }
 
 /* ═══════════════════════════════════════════════════════
    VIEW: FOCUS
@@ -2252,6 +2289,10 @@ html.dark .sidebar-panel { background: #1a1a1a; }
 
 .split-left { border-right: 1px solid var(--border); }
 
+/* Sticky offsets are measured inside the pane's padding; pull the file header
+   up to the pane's top edge. */
+.split-right { --sticky-header-top: -1.5rem; }
+
 .split-section {
   padding-bottom: 1.5rem;
   margin-bottom: 1.5rem;
@@ -2261,7 +2302,6 @@ html.dark .sidebar-panel { background: #1a1a1a; }
 .split-section:last-child { border-bottom: none; }
 .split-section.reviewed { opacity: 0.6; }
 
-.split-right .hunk-diff { max-height: none; }
 
 /* ═══════════════════════════════════════════════════════
    VIEW: DEVELOPER

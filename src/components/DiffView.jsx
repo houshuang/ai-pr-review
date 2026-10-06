@@ -2,6 +2,7 @@ import { h } from "preact";
 import { useRef, useEffect } from "preact/hooks";
 import { diff2htmlHtml } from "../diff";
 import { getBlockEndLines, blockLayout } from "../diff";
+import { observeSideBySideRows } from "../diff-rows";
 import { expandContext } from "../api";
 import { isGitHubPR, findFile, showFullFile, toggleSet, parsedFiles } from "../state";
 import { esc, md, linkFileRefs } from "../utils";
@@ -120,7 +121,7 @@ function injectInlineAnnotations(container, fileHunks) {
 
     // In side-by-side mode, mirror a styled spacer into the left (old-file) table
     // so the two tables stay vertically aligned and the annotation looks full-width.
-    // Height is synced after layout via rAF to prevent row misalignment below.
+    // observeSideBySideRows gives the spacer the annotation's height.
     if (isSideBySide) {
       const filesDiff = row.closest(".d2h-files-diff");
       const leftSide = filesDiff?.querySelector(".d2h-file-side-diff");
@@ -139,10 +140,6 @@ function injectInlineAnnotations(container, fileHunks) {
           spacerTd.appendChild(spacerDiv);
           spacerRow.appendChild(spacerTd);
           leftRow.after(spacerRow);
-          requestAnimationFrame(() => {
-            const h = annotationRow.getBoundingClientRect().height;
-            if (h > 0) spacerDiv.style.minHeight = `${h}px`;
-          });
         }
       }
     }
@@ -171,6 +168,8 @@ export function DiffView({ file, mode, filePath, hunkKey, fileHunks, showExpandB
     // Inject annotations inline at the right line positions
     injectInlineAnnotations(containerRef.current, fileHunks);
 
+    const stopRowSync = observeSideBySideRows(containerRef.current);
+
     // Attach expand context click handlers via event delegation
     const handler = async (e) => {
       const bar = e.target.closest("[data-expand-file]");
@@ -195,6 +194,7 @@ export function DiffView({ file, mode, filePath, hunkKey, fileHunks, showExpandB
 
     containerRef.current.addEventListener("click", handler);
     return () => {
+      stopRowSync();
       if (containerRef.current) {
         containerRef.current.removeEventListener("click", handler);
       }
