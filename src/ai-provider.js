@@ -203,7 +203,10 @@ export async function runCodex({
           reject(codexFailure(code, stderr, prompt, failure));
         }
       });
-      child.stdin.on("error", reject);
+      // EPIPE means Codex exited before reading the prompt; "close" reports why.
+      child.stdin.on("error", (err) => {
+        if (err.code !== "EPIPE") reject(err);
+      });
       child.stdin.end(prompt);
     });
     return readFileSync(outputPath, "utf-8");
