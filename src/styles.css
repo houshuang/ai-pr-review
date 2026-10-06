@@ -700,6 +700,28 @@ strong { font-weight: 600; }
 
 .tip-finding p { margin: 0; }
 
+/* ─── Toast ─── */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  z-index: 300;
+  max-width: calc(100vw - 32px);
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  animation: toast-in 0.2s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+}
+
 /* ─── Diagrams ─── */
 .diagram-container {
   margin: 1.5rem 0;

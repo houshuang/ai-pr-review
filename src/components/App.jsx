@@ -18,6 +18,7 @@ import { Landing } from "./Landing";
 import { ChatThread, chatOpen, toggleChat } from "./ChatThread";
 import { SelectionPopover } from "./SelectionPopover";
 import { StaleBanner } from "./StaleBanner";
+import { Toast, showToast } from "./Toast";
 
 function getRequestedSlug() {
   return new URLSearchParams(window.location.search).get("pr");
@@ -25,6 +26,55 @@ function getRequestedSlug() {
 
 function getWalkthroughUrl(slug) {
   return slug ? `/walkthroughs/${slug}.json` : "/walkthrough-data.json";
+}
+
+// Keep what the reader is looking at still while content above it changes
+// size. Native scroll anchoring isn't available everywhere (and the split
+// layout scrolls inside its panes), so pick an on-screen element and, for a
+// short window, scroll by however far it moves whenever layout changes.
+// A ResizeObserver fires after layout but before paint regardless of when
+// Preact flushes the render, and if the browser already anchored, the
+// measured movement is zero.
+function holdScrollPosition(ms = 2000) {
+  if (typeof ResizeObserver === "undefined") return;
+  const anchor = Array.from(
+    document.querySelectorAll(".review-tip, .review-section, #section-remaining")
+  ).find((el) => {
+    const r = el.getBoundingClientRect();
+    return r.bottom > 0 && r.top < window.innerHeight;
+  });
+  if (!anchor) return;
+  const scroller = anchor.closest(".split-left, .split-right") || window;
+  let top = anchor.getBoundingClientRect().top;
+  const remeasure = () => { top = anchor.getBoundingClientRect().top; };
+  let stopTimer = null;
+  const stop = () => {
+    observer.disconnect();
+    scroller.removeEventListener("scroll", remeasure);
+  };
+  const observer = new ResizeObserver(() => {
+    // Background tabs render no frames, so the window starts at the first
+    // frame the reader can actually see.
+    stopTimer ??= setTimeout(stop, ms);
+    if (!anchor.isConnected) return;
+    const delta = anchor.getBoundingClientRect().top - top;
+    if (Math.abs(delta) >= 1) scroller.scrollBy({ top: delta, behavior: "instant" });
+    remeasure();
+  });
+  observer.observe(document.body);
+  scroller.addEventListener("scroll", remeasure, { passive: true });
+}
+
+function summarizeTips(tips) {
+  const count = (status) => tips.filter((t) => t?.status === status).length;
+  const parts = [
+    [count("concern"), "concern", "concerns"],
+    [count("verified"), "verified", "verified"],
+    [count("info"), "note", "notes"],
+  ]
+    .filter(([n]) => n > 0)
+    .map(([n, one, many]) => `${n} ${n === 1 ? one : many}`);
+  return parts.length ? `Review tips checked: ${parts.join(", ")}` : "Review tips checked";
 }
 
 export function App() {
@@ -85,11 +135,20 @@ export function App() {
         // Polling update: merge in only the review_tips so we don't blow away
         // reactive state on unrelated parts of the walkthrough.
         const current = data.value;
-        if (current?.walkthrough && json?.walkthrough?.review_tips) {
+        const tips = json?.walkthrough?.review_tips;
+        if (current?.walkthrough && tips) {
+          const wasPending = hasPendingTips(current);
+          holdScrollPosition();
           data.value = {
             ...current,
-            walkthrough: { ...current.walkthrough, review_tips: json.walkthrough.review_tips },
+            walkthrough: { ...current.walkthrough, review_tips: tips },
           };
+          if (wasPending && !hasPendingTips(json)) {
+            showToast(summarizeTips(tips), {
+              onClick: () => document.querySelector(".review-tips")
+                ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+            });
+          }
         }
       }
 
@@ -320,6 +379,7 @@ export function App() {
       <Layout callbacks={callbacks} />
       <ChatThread />
       <SelectionPopover />
+      <Toast />
     </>
   );
 }
