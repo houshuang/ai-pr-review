@@ -20,6 +20,25 @@ export function renderFileDiff(file, mode) {
   });
 }
 
+// Side-by-side only pays off when deletions and additions pair up. A block that
+// is mostly one-sided leaves a near-empty pane and halves the width available to
+// long lines, so it renders unified even when side-by-side is selected.
+const MIN_SIDE_BY_SIDE_BALANCE = 0.4;
+
+export function blockLayout(block, mode) {
+  if (mode === "unified") return "unified";
+  let adds = 0;
+  let dels = 0;
+  for (const line of block.lines || []) {
+    if (line.type === "insert") adds++;
+    else if (line.type === "delete") dels++;
+  }
+  if (adds === 0 || dels === 0) return "unified";
+  return Math.min(adds, dels) / Math.max(adds, dels) >= MIN_SIDE_BY_SIDE_BALANCE
+    ? "side-by-side"
+    : "unified";
+}
+
 export function filterFileToRanges(file, ranges) {
   if (!file || !ranges || ranges.length === 0) return file;
 

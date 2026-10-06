@@ -882,11 +882,13 @@ html.dark .mermaid-zoom-canvas {
   margin-top: 24px;
 }
 
+/* overflow: clip (not hidden) keeps the rounded corners without creating a
+   scroll container, which would stop the file header from sticking. */
 .hunk-group {
   margin-bottom: 24px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  overflow: hidden;
+  overflow: clip;
   background: var(--bg-white);
   transition: opacity 0.2s, border-color 0.2s;
 }
@@ -905,6 +907,9 @@ html.dark .mermaid-zoom-canvas {
 }
 
 .hunk-header {
+  position: sticky;
+  top: var(--sticky-header-top, 0);
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1142,7 +1147,7 @@ html.dark .mermaid-zoom-canvas {
   margin-bottom: 16px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  overflow: hidden;
+  overflow: clip;
 }
 
 .remaining-group-header {
@@ -1173,6 +1178,10 @@ html.dark .mermaid-zoom-canvas {
 }
 
 .remaining-file-header {
+  position: sticky;
+  top: var(--sticky-header-top, 0);
+  z-index: 5;
+  background: var(--bg-white);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2124,6 +2133,8 @@ html.dark .sidebar-panel { background: #1a1a1a; }
   display: flex;
   flex-direction: column;
 }
+
+.layout-focus { --sticky-header-top: 48px; }
 
 .focus-topbar {
   position: sticky;

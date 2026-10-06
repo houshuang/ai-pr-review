@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { html as diff2htmlHtml, parse as diff2htmlParse } from "diff2html";
+import { blockLayout } from "./diff.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -104,22 +105,13 @@ function filterFileToRanges(file, ranges) {
   return { ...file, blocks: filtered };
 }
 
-function hasNoDeletions(file) {
-  if (!file.blocks || !file.blocks.length) return false;
-  return file.blocks.every(block =>
-    block.lines.every(line => line.type !== "delete")
-  );
-}
-
 function renderDiffHtml(file, mode) {
   if (!file || !file.blocks?.length) return "";
-  // Add-only chunks (no deletions) → force unified to avoid empty left pane
-  if (mode !== "unified" && hasNoDeletions(file)) mode = "unified";
-  return diff2htmlHtml([file], {
+  return file.blocks.map((block) => diff2htmlHtml([{ ...file, blocks: [block] }], {
     drawFileList: false,
     matching: "lines",
-    outputFormat: mode === "unified" ? "line-by-line" : "side-by-side",
-  });
+    outputFormat: blockLayout(block, mode) === "unified" ? "line-by-line" : "side-by-side",
+  })).join("");
 }
 
 // ── Component renderers ──
