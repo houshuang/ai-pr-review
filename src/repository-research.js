@@ -37,9 +37,11 @@ export function researchPlan(review) {
   ];
 }
 
-export function researchKey(review) {
+export function researchKey(review, context) {
   return hash(
     JSON.stringify({
+      headProvenance: context?.head.provenance || null,
+      baseProvenance: context?.base?.provenance || null,
       input: inputHash({ ...review.meta, diff: review.diff }),
       repositoryPath: review.meta.repositoryPath || null,
       diffBaseSha: review.meta.diffBaseSha || null,
@@ -63,7 +65,7 @@ export async function researchRepository(
 ) {
   const context = await prepare(review.meta, review.diff, cacheDir);
   const dir = resolve(cacheDir, "../research");
-  const key = researchKey(review);
+  const key = researchKey(review, context);
   const path = resolve(dir, `${key}.json`);
   let release;
   try {
