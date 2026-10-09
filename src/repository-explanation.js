@@ -144,20 +144,22 @@ export async function readSource(context, { path, line = 1, revision = "head" })
 export async function explainRepository(
   review,
   scope,
-  { runner = runCodex, cacheDir, signal, message, onActivity, history = [], research = false } = {},
+  { runner = runCodex, cacheDir, signal, message, onActivity, focus, context: suppliedContext, history = [], research = false } = {},
 ) {
   const selection = explanationScope(review, scope);
-  const context = await repositoryContext(review.meta, review.diff, cacheDir);
+  const context = suppliedContext || await repositoryContext(review.meta, review.diff, cacheDir);
   try {
     const userPrompt = `Study the entire reviewed repository, focusing on ${selection.title}.
 Head worktree: ${context.head.path} (${context.head.provenance})
 Base worktree: ${context.base?.path || "unavailable; do not claim verified before behavior"}
 PR title: ${review.meta.title || review.walkthrough.title}
-Files to start from: ${selection.files.join(", ")}
+Files to start from: ${(focus?.files || selection.files).join(", ")}
+${focus ? `Research assignment: ${focus.instruction}
+Inspect other files as needed; assigned files are a starting point, not an access limit.` : ""}
 Existing narrative (may be incomplete or wrong): ${selection.context}
 Shared research (may be incomplete): ${review.research?.markdown || ""}
 Diff (may be truncated; full source is available):\n${review.diff.slice(0, 150_000)}
-${message ? `Prior discussion:\n${JSON.stringify(history)}\nFollow-up question: ${message}` : research ? "Produce architectural research notes for the walkthrough writer. Focus on difficult concepts and include worked examples, invariant explanations and a proposed teaching order. Keep under 5000 words." : "Write a detailed teaching narrative, usually 800–1800 words for a difficult section. Be proportionate for simple files. Explain the design rather than listing hunks. Use markdown headings, tables and real short code excerpts where helpful."}
+${message ? `Prior discussion:\n${JSON.stringify(history)}\nFollow-up question: ${message}` : research ? "Produce architectural research notes for the walkthrough writer. Focus on difficult concepts and include worked examples, invariant explanations and a proposed teaching order. Keep under 5000 words unless the research assignment specifies a smaller budget." : "Write a detailed teaching narrative, usually 800–1800 words for a difficult section. Be proportionate for simple files. Explain the design rather than listing hunks. Use markdown headings, tables and real short code excerpts where helpful."}
 Return JSON with title, markdown and references (path, line, revision head/base). Every important code claim needs a reference. Deduplicate references and select at most 100 important source locations. Keep markdown under 100,000 characters; return a nonempty title and markdown. Do not use markdown links; cite file:line in prose.`;
     const result = JSON.parse(
       await runner({
@@ -205,7 +207,7 @@ Return JSON with title, markdown and references (path, line, revision head/base)
       version: EXPLANATION_VERSION,
     };
   } finally {
-    await context.cleanup();
+    if (!suppliedContext) await context.cleanup();
   }
 }
 

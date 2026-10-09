@@ -29,7 +29,8 @@ import { canReuseCache, canPatchCache, configFingerprint, inputHash, hash } from
 import { fetchLocalDiff, readDiffFile } from "./local-input.js";
 import { withTaskProgress } from "./task-progress.js";
 import { validateOrRepairWalkthrough } from "./walkthrough-repair.js";
-import { explainRepository, TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
+import { researchRepository, RESEARCH_VERSION } from "./repository-research.js";
+import { TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
 import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
 import { looksLikeBranchName, resolveBranchToPR } from "./resolve-branch.js";
@@ -40,7 +41,7 @@ const AI_PROVIDER = resolveAIProvider();
 const execAsync = promisify(execFile);
 const GH_OPTIONS = { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024, timeout: 30000 };
 const MODEL_TASKS = {
-  research: { provider: "codex", ...getTaskConfig("codex", "research") },
+  research: { version: RESEARCH_VERSION, provider: "codex", ...getTaskConfig("codex", "research") },
   generation: getTaskConfig(AI_PROVIDER, "generation"), patch: getTaskConfig(AI_PROVIDER, "patch"),
   investigation: { provider: "codex", ...getTaskConfig("codex", "investigation") },
 };
@@ -841,7 +842,7 @@ ${JSON.stringify(previousWalkthrough)}
 
   const userPrompt = `${previousWalkthrough ? "Update" : "Create"} a walkthrough for this PR.
 
-**Repository research at the reviewed revision:**
+**Repository research at the reviewed revision (reconcile the passes into one coherent explanation; investigate apparent contradictions in the supplied code, never silently select a convenient claim):**
 ${prData.research?.markdown || "No repository research available"}
 
 **Title:** ${prData.title}
@@ -1164,7 +1165,7 @@ If the delta is trivial (formatting, comments only) you may return an essentiall
 
   const userPrompt = `Update the walkthrough for this PR.
 
-**Repository research at the reviewed revision:**
+**Repository research at the reviewed revision (reconcile the passes into one coherent explanation; investigate apparent contradictions in the supplied code, never silently select a convenient claim):**
 ${prData.research?.markdown || "No repository research available"}
 
 **Title:** ${prData.title}
@@ -1373,9 +1374,9 @@ async function main() {
     prData.research = cached.research;
   } else {
     log("INFO", "Researching algorithms, invariants and unchanged callers in the reviewed repository...");
-    try { prData.research = await withTaskProgress("Repository research", onActivity => explainRepository({ meta: prData, diff: prData.diff, walkthrough: {
+    try { prData.research = await researchRepository({ meta: prData, diff: prData.diff, walkthrough: {
       title: prData.title, overview: prData.body || "", sections: [], file_map: parseDiffIntoFiles(prData.diff).map(file => ({ path: file.path })),
-    } }, { kind: "pr" }, { research: true, onActivity, cacheDir: resolve(__dirname, "..", ".cache/repos") }), { report: message => log("INFO", message) });
+    } }, { cacheDir: resolve(__dirname, "..", ".cache/repos"), report: message => log("INFO", message) });
     } catch (error) {
       log("INFO", `Repository research unavailable: ${error.message}. Generating from the diff with this limitation disclosed.`);
       prData.research = { status: "blocked", markdown: "Repository research unavailable. Explain only what the supplied diff supports; do not claim whole-repository understanding.", error: error.message };
