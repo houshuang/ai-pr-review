@@ -92,6 +92,13 @@ test("research cache invalidates revisions, diff, instructions and research mode
     );
   }
   assert.notEqual(researchKey({ ...f.review, diff: "different" }), researchKey(f.review));
+  assert.notEqual(
+    researchKey(f.review, f.context),
+    researchKey(f.review, {
+      ...f.context,
+      head: { ...f.context.head, provenance: "patch against another HEAD" },
+    }),
+  );
   const previous = process.env.REVIEW_CODEX_RESEARCH_EFFORT;
   try {
     process.env.REVIEW_CODEX_RESEARCH_EFFORT = "medium";
