@@ -152,10 +152,10 @@ test("argument parsing pulls provider options out wherever they appear", () => {
   assert.throws(() => parseProviderArgs(["--set-default", "gpt"]), /Unsupported/);
 });
 
-test("the status line names the provider, why, and how to change it", () => {
+test("the status line concisely names the provider and selection source", () => {
   assert.equal(
     describeChoice({ provider: "codex", source: "saved default" }),
-    "AI provider: Codex (saved default) — --claude for one run, review --set-default claude to change the default"
+    "AI provider: Codex (saved default)"
   );
 });
 

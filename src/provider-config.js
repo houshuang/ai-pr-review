@@ -149,8 +149,7 @@ export async function chooseProvider({
 }
 
 export function describeChoice({ provider, source }) {
-  const other = provider === "claude" ? "codex" : "claude";
-  return `AI provider: ${LABEL[provider]} (${source}) — --${other} for one run, review --set-default ${other} to change the default`;
+  return `AI provider: ${LABEL[provider]} (${source})`;
 }
 
 /**

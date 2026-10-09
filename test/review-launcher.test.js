@@ -9,11 +9,14 @@ async function fixture(t, exitCode = 0) {
   const root = await mkdtemp(join(tmpdir(), "review-launcher-"));
   await mkdir(join(root, "bin"));
   await mkdir(join(root, "tools"));
+  await mkdir(join(root, "src"));
+  await cp(new URL("../src/terminal-progress.js",import.meta.url),join(root,"src/terminal-progress.js"));
+  await writeFile(join(root,"package.json"),JSON.stringify({type:"module"}));
   await cp(new URL("../bin/review", import.meta.url), join(root, "bin/review"));
   const write = (name, script) => writeFile(join(root, "tools", name), script, { mode: 0o755 });
   await write(
     "node",
-    `#!/bin/bash\nif [[ "$1" == *provider-config.js ]]; then echo codex; else exec '${process.execPath}' '${root}/generator.mjs'; fi\n`,
+    `#!/bin/bash\nif [[ "$1" == *provider-config.js ]]; then echo codex; elif [[ "$1" == *terminal-progress.js || "$1" == --input-type=module ]]; then echo renderer-called >> '${root}/renderer-calls'; exec '${process.execPath}' "$@"; else exec '${process.execPath}' '${root}/generator.mjs'; fi\n`,
   );
   await writeFile(
     join(root, "generator.mjs"),
@@ -57,6 +60,7 @@ test("launcher streams progress before completion, logs it once and opens the em
   const result = await fixture(t);
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.early, true);
+  assert.equal((await readFile(join(result.root, 'renderer-calls'), 'utf8')).trim().split('\n').length, 2);
   assert.equal(result.output.split("Repository research started.").length, 2);
   assert.match(result.log, /Repository research started/);
   assert.equal(
