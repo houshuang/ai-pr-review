@@ -1,4 +1,4 @@
-import { DetailedDescription } from "./DetailedDescription";
+import { DetailedDescription, descriptionScope } from "./DetailedDescription";
 import { h } from "preact";
 import { useEffect, useCallback, useState } from "preact/hooks";
 import {
@@ -249,7 +249,7 @@ export function App() {
   // Keyboard handler
   useEffect(() => {
     const handleKeyboard = (e) => {
-      if (!data.value) return;
+      if (!data.value || descriptionScope.value) return;
 
       // Escape closes overlays: chat first, then action panel
       if (e.key === "Escape") {
