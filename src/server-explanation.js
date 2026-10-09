@@ -52,6 +52,35 @@ export function explanationKey(review, scope) {
   );
 }
 
+async function readSavedDescription(path) {
+  try {
+    const value = JSON.parse(await readFile(path, "utf8"));
+    if (
+      !value ||
+      typeof value.title !== "string" ||
+      !value.title.trim() ||
+      typeof value.markdown !== "string" ||
+      !value.markdown.trim() ||
+      !value.scope ||
+      typeof value.generationId !== "string" ||
+      !Array.isArray(value.references) ||
+      !value.references.every(
+        (ref) =>
+          ref &&
+          typeof ref.path === "string" &&
+          Number.isSafeInteger(ref.line) &&
+          ref.line > 0 &&
+          ["head", "base"].includes(ref.revision),
+      )
+    )
+      return null;
+    return value;
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
 export async function savedExplanations(root, review) {
   const { readdir } = await import("node:fs/promises");
   const dir = resolve(root, ".cache/explanations");
@@ -64,7 +93,8 @@ export async function savedExplanations(root, review) {
   }
   const results = [];
   for (const name of names.filter((name) => /^[a-f0-9]{64}\.json$/.test(name))) {
-    const result = JSON.parse(await readFile(resolve(dir, name), "utf8"));
+    const result = await readSavedDescription(resolve(dir, name));
+    if (!result) continue;
     if (
       result.generationId === walkthroughIdentity(review) &&
       name === `${explanationKey(review, result.scope)}.json`
@@ -83,14 +113,7 @@ export function createExplanationHandler({
 }) {
   const jobs = new Map();
   const dir = resolve(root, ".cache/explanations");
-  const cached = async (key) => {
-    try {
-      return JSON.parse(await readFile(resolve(dir, `${key}.json`), "utf8"));
-    } catch (error) {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    }
-  };
+  const cached = (key) => readSavedDescription(resolve(dir, `${key}.json`));
   return async (req, res) => {
     try {
       if (req.method !== "POST") throw new HttpError(405, "POST only");

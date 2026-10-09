@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { createExplanationHandler, savedExplanations } from "../src/server-explanation.js";
+import {
+  createExplanationHandler,
+  savedExplanations,
+  explanationKey,
+} from "../src/server-explanation.js";
 
 async function fixture(t, explain) {
   const root = await mkdtemp(join(tmpdir(), "explanation-server-"));
@@ -143,4 +147,27 @@ test("scope validation and cancellation prevent unrelated or partial publication
   await f.call("cancel");
   assert.equal((await f.completed()).status, "failed");
   assert.equal((await savedExplanations(f.root, f.review)).length, 0);
+});
+
+test("malformed saved descriptions can be regenerated and do not poison export", async (t) => {
+  let calls = 0;
+  const f = await fixture(t, async () => {
+    calls++;
+    return result;
+  });
+  await f.call("generate");
+  await f.completed();
+  const path = join(
+    f.root,
+    ".cache/explanations",
+    `${explanationKey(f.review, { kind: "pr" })}.json`,
+  );
+  for (const corrupt of ['{"title":', "null", '{"title":"Partial"}']) {
+    await writeFile(path, corrupt);
+    assert.equal((await f.call("load")).body.status, "idle");
+    assert.deepEqual(await savedExplanations(f.root, f.review), []);
+    await f.call("generate");
+    assert.equal((await f.completed()).status, "complete");
+  }
+  assert.equal(calls, 4);
 });
