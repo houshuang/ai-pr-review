@@ -132,15 +132,15 @@ choose_provider
 log "$(date '+%Y-%m-%d %H:%M:%S') - review $*"
 log "Generating walkthrough with ${AI_PROVIDER}..."
 
-# Run the generator, capturing output and exit code separately
-# Pass original CWD so git fallback can find the local repo
+# Stream phases and heartbeats to the terminal and log without masking failures.
 set +e
-output=$(REVIEW_AI_PROVIDER="$AI_PROVIDER" REVIEW_ORIGINAL_CWD="$ORIGINAL_CWD" node src/generate.js "$@" 2>&1)
-exit_code=$?
+REVIEW_AI_PROVIDER="$AI_PROVIDER" REVIEW_ORIGINAL_CWD="$ORIGINAL_CWD" node src/generate.js "$@" 2>&1 | tee -a "$LOG_FILE"
+run_status=("${PIPESTATUS[@]}")
+exit_code=${run_status[0]}
+if [ "$exit_code" -eq 0 ] && [ "${run_status[1]}" -ne 0 ]; then
+  exit_code=${run_status[1]}
+fi
 set -e
-
-echo "$output"
-echo "$output" >> "$LOG_FILE"
 
 if [ $exit_code -ne 0 ]; then
   log ""
@@ -149,7 +149,7 @@ if [ $exit_code -ne 0 ]; then
 fi
 
 # Extract the slug from generator output
-slug=$(echo "$output" | grep "^Slug: " | sed 's/^Slug: //')
+slug=$(sed -n 's/^Slug: //p' "$LOG_FILE" | tail -n 1)
 if [ -z "$slug" ]; then
   slug="walkthrough-data"
 fi

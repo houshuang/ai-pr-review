@@ -27,6 +27,7 @@ import { writeReviewFile, acquireFileLock, shouldInvestigateTip } from "./review
 import { WALKTHROUGH_SCHEMA, PATCH_SCHEMA, validateWalkthrough, validatePatch } from "./walkthrough-schema.js";
 import { canReuseCache, canPatchCache, configFingerprint, inputHash, hash } from "./cache-policy.js";
 import { fetchLocalDiff, readDiffFile } from "./local-input.js";
+import { withTaskProgress } from "./task-progress.js";
 import { validateOrRepairWalkthrough } from "./walkthrough-repair.js";
 import { explainRepository, TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
@@ -72,6 +73,11 @@ function log(level, ...args) {
   } else {
     console.log(...args);
   }
+}
+
+function runCodexWithProgress(options) {
+  const labels = { generation: "Writing walkthrough", patch: "Updating walkthrough", repair: "Repairing walkthrough" };
+  return withTaskProgress(labels[options.task] || "Codex task", onActivity => runCodex({ ...options, onActivity }), { report: message => log("INFO", message) });
 }
 
 // --- JSON parse / repair / dump for AI responses ---
@@ -164,7 +170,7 @@ async function repairJSONWithAI(text, client) {
       "You are a JSON repair tool. The user provides a malformed JSON document. Return ONLY the corrected JSON — no commentary, no markdown fences. Preserve all content exactly; only fix syntax errors (unescaped quotes inside strings, raw newlines inside strings, missing/trailing commas, control characters).";
     let fixed;
     if (AI_PROVIDER === "codex") {
-      fixed = await runCodex({
+      fixed = await runCodexWithProgress({
         systemPrompt,
         userPrompt: text,
         task: "repair",
@@ -862,20 +868,13 @@ Generate the walkthrough JSON. Important reminders:
 
   let text;
   if (AI_PROVIDER === "codex") {
-    let progressStarted = false;
     let usage = null;
-    text = await runCodex({
+    text = await runCodexWithProgress({
       systemPrompt: SYSTEM_PROMPT,
       userPrompt,
       cwd: tmpdir(),
       task: "generation",
       outputSchema: WALKTHROUGH_SCHEMA,
-      onProgress: () => {
-        if (!progressStarted) {
-          progressStarted = true;
-          log("INFO", "Codex is working...");
-        }
-      },
       onUsage: (u) => { usage = u; },
     });
     log("INFO", `Codex response: ${text.length} characters, ${formatCodexUsage(usage)}`);
@@ -965,7 +964,7 @@ Generate the walkthrough JSON. Important reminders:
     }
   }
 
-  walkthrough = await validateOrRepairWalkthrough(walkthrough, prData.diff, { onRepair: error => log("WARN", `Walkthrough validation failed (${error.message}); attempting one reference repair.`) });
+  walkthrough = await validateOrRepairWalkthrough(walkthrough, prData.diff, { runner: runCodexWithProgress, onRepair: error => log("WARN", `Walkthrough validation failed (${error.message}); attempting one reference repair.`) });
 
   // Fix common Mermaid syntax issues (e.g. unquoted pipes in node labels)
   sanitizeWalkthroughDiagrams(walkthrough);
@@ -1192,7 +1191,7 @@ Return ONLY the JSON patch. Include all schema fields, using empty arrays and nu
   try {
     if (AI_PROVIDER === "codex") {
       let usage = null;
-      text = await runCodex({
+      text = await runCodexWithProgress({
         systemPrompt,
         userPrompt,
         cwd: tmpdir(),
@@ -1374,9 +1373,9 @@ async function main() {
     prData.research = cached.research;
   } else {
     log("INFO", "Researching algorithms, invariants and unchanged callers in the reviewed repository...");
-    try { prData.research = await explainRepository({ meta: prData, diff: prData.diff, walkthrough: {
+    try { prData.research = await withTaskProgress("Repository research", onActivity => explainRepository({ meta: prData, diff: prData.diff, walkthrough: {
       title: prData.title, overview: prData.body || "", sections: [], file_map: parseDiffIntoFiles(prData.diff).map(file => ({ path: file.path })),
-    } }, { kind: "pr" }, { research: true, cacheDir: resolve(__dirname, "..", ".cache/repos") });
+    } }, { kind: "pr" }, { research: true, onActivity, cacheDir: resolve(__dirname, "..", ".cache/repos") }), { report: message => log("INFO", message) });
     } catch (error) {
       log("INFO", `Repository research unavailable: ${error.message}. Generating from the diff with this limitation disclosed.`);
       prData.research = { status: "blocked", markdown: "Repository research unavailable. Explain only what the supplied diff supports; do not claim whole-repository understanding.", error: error.message };

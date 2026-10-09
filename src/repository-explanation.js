@@ -144,7 +144,7 @@ export async function readSource(context, { path, line = 1, revision = "head" })
 export async function explainRepository(
   review,
   scope,
-  { runner = runCodex, cacheDir, signal, message, history = [], research = false } = {},
+  { runner = runCodex, cacheDir, signal, message, onActivity, history = [], research = false } = {},
 ) {
   const selection = explanationScope(review, scope);
   const context = await repositoryContext(review.meta, review.diff, cacheDir);
@@ -166,6 +166,7 @@ Return JSON with title, markdown and references (path, line, revision head/base)
         systemPrompt: TEACHING_INSTRUCTIONS,
         userPrompt,
         outputSchema: EXPLANATION_SCHEMA,
+        onActivity,
         signal,
       }),
     );

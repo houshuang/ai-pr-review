@@ -115,7 +115,12 @@ test("whole generator resumes blocked cached tips automatically and retains comp
   git("add", "."); git("commit", "-m", "base"); git("checkout", "-b", "feature");
   writeFileSync(join(f.invoking, "example.js"), "export const value = 2;\n");
   git("add", "."); git("commit", "-m", "change");
-  succeeded(await f.run(["--local"]));
+  const firstRun = await f.run(["--local"]);
+  succeeded(firstRun);
+  assert.match(firstRun.stdout, /Repository research started/);
+  assert.match(firstRun.stdout, /Repository research completed/);
+  assert.match(firstRun.stdout, /Writing walkthrough started/);
+  assert.match(firstRun.stdout, /Writing walkthrough completed/);
   const cachePath = join(f.tool, "public", "walkthroughs", readdirSync(join(f.tool, "public", "walkthroughs"))[0]);
   const cached = f.output();
   cached.walkthrough.review_tips = [{tip:"Check the exported constant",status:"info",resolved:false,investigationState:"blocked",finding:"Prior unavailable runtime"}];

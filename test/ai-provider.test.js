@@ -344,3 +344,16 @@ test("repository teaching tasks can inspect source while remaining read-only", a
     }
   } finally { fake.cleanup(); }
 });
+
+test('Codex activity summarizes source commands without passing command or source content', async () => {
+  const fake = fakeCodex(`
+    console.log(JSON.stringify({type:'item.started',item:{id:'cmd',type:'command_execution',command:'read secret'}}));
+    console.log(JSON.stringify({type:'item.completed',item:{id:'cmd',type:'command_execution',aggregated_output:'private source'}}));
+    fs.writeFileSync(output,'answer');
+  `);
+  try {
+    const activity=[];
+    await fake.run({onActivity:event=>activity.push(event)});
+    assert.deepEqual(activity,[{type:'command-started'},{type:'command-completed'}]);
+  } finally { fake.cleanup(); }
+});

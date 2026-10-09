@@ -24,7 +24,7 @@ cp .env.example .env   # for Claude: put your Anthropic API key in .env
 ./bin/review https://github.com/owner/repo/pull/123
 ```
 
-The first run asks whether Claude or Codex should generate walkthroughs by default and saves the answer (see [Choosing the AI provider](#choosing-the-ai-provider)). It then fetches the PR, generates the walkthrough, starts a local viewer on http://localhost:5200 and opens it in your browser. Generation time depends on the model and PR size. Later runs reuse the walkthrough when its input, revision and model configuration match the cache.
+The first run asks whether Claude or Codex should generate walkthroughs by default and saves the answer (see [Choosing the AI provider](#choosing-the-ai-provider)). It then fetches the PR, generates the walkthrough, starts a local viewer on http://localhost:5200 and opens it in your browser. Generation time depends on the model and PR size. The terminal streams phase messages immediately. Repository research and Codex writing, incremental updates and repairs report elapsed-time heartbeats every 30 seconds, with source-command counts and the time since the last Codex activity when available. These are activity reports, not completion estimates. Later runs reuse the walkthrough when its input, revision and model configuration match the cache.
 
 ### Requirements
 
