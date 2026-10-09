@@ -8,6 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getTaskConfig } from './src/models.js';
 import { resolveAIProvider, runCodex } from './src/ai-provider.js';
 import { createGithubHandler, createExportHandler, validSlug, sendError } from './src/server-http.js';
+import { createExplanationHandler } from './src/server-explanation.js';
 import { createChatHandler } from './src/server-chat.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -71,6 +72,7 @@ export default defineConfig({
   build: { outDir: 'dist' },
   plugins: [
     preact(), walkthroughsEndpoint(),
+    endpointPlugin('explanation-middleware', '/api/explanation', createExplanationHandler({ root: __dirname })),
     endpointPlugin('gh-api-proxy', '/api/gh', createGithubHandler({ log: apiLog })),
     endpointPlugin('export-endpoint', '/api/export', createExportHandler({ root: __dirname })),
     endpointPlugin('chat-middleware', '/api/chat', createChatHandler({

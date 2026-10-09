@@ -3106,3 +3106,21 @@ body {
   background: var(--bg); padding: 0 4px; border-radius: 3px;
   border: 1px solid var(--border); font-family: var(--sans); font-size: 10px;
 }
+
+.description-button { white-space: normal; text-align: left; }
+.description-overlay { position: fixed; inset: 0; z-index: 3000; background: #0008; display: flex; justify-content: flex-end; }
+.description-panel { width: min(100%, 960px); height: 100%; background: var(--bg-white); color: var(--ink); display: flex; flex-direction: column; box-shadow: -8px 0 40px #0003; }
+.description-header { padding: 24px 32px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--border); }
+.description-header > div { min-width: 0; }
+.description-header > button { flex-shrink: 0; }
+.description-header h2 { margin: 8px 0 0; overflow-wrap: anywhere; }
+.description-body { overflow: auto; padding: 24px 40px 60px; }
+.description-provenance { font-size: 12px; color: var(--ink-mid); overflow-wrap: anywhere; }
+.description-references { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 24px 0; overflow-wrap: anywhere; }
+.description-references button { text-align: left; overflow-wrap: anywhere; }
+.description-message { border-top: 1px solid var(--border); padding-top: 24px; margin-top: 24px; }
+.description-question { margin-top: 32px; display: grid; gap: 12px; }
+.description-question textarea { min-height: 100px; width: 100%; padding: 12px; font: inherit; color: inherit; background: var(--bg-white); border: 1px solid var(--border); }
+.description-source { margin-top: 24px; padding: 20px; border: 1px solid var(--border); overflow-wrap: anywhere; }
+.description-source pre { overflow: auto; font-size: 12px; }
+@media (max-width: 700px) { .description-body, .description-header { padding: 20px; } .section-header-right { flex-wrap: wrap; } .hunk-header { flex-wrap: wrap; } }

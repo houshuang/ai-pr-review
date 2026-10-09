@@ -301,3 +301,14 @@ The system prompt follows a structural change philosophy inspired by difftastic:
 ### Remaining Gaps
 1. No streaming generation / in-browser generation
 2. No interdiff support (show what changed between force-pushes)
+
+## Repository-grounded explanations
+
+The generator performs read-only repository research before synthesis; difficult
+narratives teach invariants, algorithm state, alternatives and concrete scenarios.
+On-demand PR/section/file descriptions use a dedicated Codex task over pinned head
+and merge-base snapshots. Results are generation-bound, cached independently from
+review findings, and included in static exports. The viewer supports background
+jobs, cancellation/retry, follow-ups and source excerpts beyond the diff. Research
+failure is disclosed as diff-only generation. See README's “Understanding difficult
+changes” for task settings, persistence and patch provenance.

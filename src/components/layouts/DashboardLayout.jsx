@@ -1,3 +1,4 @@
+import { DescriptionButton } from "../DetailedDescription";
 import { h } from "preact";
 import { data, reviewState, viewMode, currentSectionIndex, getProgress, getFileCoverage } from "../../state";
 import { esc } from "../../utils";
@@ -59,6 +60,7 @@ export function DashboardLayout({ callbacks }) {
                   <span class={`dashboard-status ${reviewed ? "done" : ""}`}>{reviewed ? "\u2713" : "\u25CB"}</span>
                 </div>
                 <h3 class="dashboard-card-title">{esc(s.title)}</h3>
+                <DescriptionButton scope={{ kind: "section", id: s.id }} />
                 <div class="dashboard-card-meta">
                   <span class={`hunk-importance importance-badge-${topImp}`}>{topImp}</span>
                   <span>{fileCount} file{fileCount !== 1 ? "s" : ""}</span>

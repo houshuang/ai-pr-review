@@ -1,3 +1,4 @@
+import { DescriptionButton } from "./DetailedDescription";
 import { h } from "preact";
 import { data, getProgress, reviewState } from "../state";
 
@@ -35,6 +36,8 @@ export function Header() {
           <span className="meta-item meta-reviewers">Reviewers: {reviewerNames.join(", ")}</span>
         )}
       </div>
+    {d.research?.status === "blocked" && <p className="description-provenance" role="status">Repository research unavailable: {d.research.error}. This walkthrough was generated from the diff.</p>}
+      <DescriptionButton label="Generate PR deep dive" />
     </header>
   );
 }

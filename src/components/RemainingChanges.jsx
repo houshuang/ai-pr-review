@@ -1,3 +1,4 @@
+import { DescriptionButton } from "./DetailedDescription";
 import { h } from "preact";
 import { useCallback } from "preact/hooks";
 import {
@@ -196,6 +197,7 @@ function RemainingFile({ filePath, rs, pf, hunkCollapsed, mode, comments }) {
           />
         </label>
         <span className="remaining-file-name">{fileName}</span>
+        <DescriptionButton scope={{ kind: "file", path: filePath }} />
         {stats && <span className="remaining-file-stats">+{stats.additions} &minus;{stats.deletions}</span>}
         {fileComments.length > 0 && (
           <span className="remaining-file-comments">{fileComments.length} comment{fileComments.length > 1 ? "s" : ""}</span>
