@@ -57,7 +57,9 @@ test("separate resolver processes preserve all tip updates and readers always se
   const workers = Array.from({ length: 12 }, (_, index) => {
     const script = `import {updateReviewTip} from ${JSON.stringify(moduleUrl)}; await updateReviewTip(${JSON.stringify(path)},${JSON.stringify(meta)},${JSON.stringify(`tip ${index}`)},{status:'verified',finding:'completed',pending:false});`;
     const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "pipe" });
-    return once(child, "exit").then(([code]) => assert.equal(code, 0));
+    let stderr = "";
+    child.stderr.on("data", chunk => stderr += chunk);
+    return once(child, "exit").then(([code]) => assert.equal(code, 0, stderr));
   });
   let completed = false;
   const all = Promise.all(workers).then(() => { completed = true; });

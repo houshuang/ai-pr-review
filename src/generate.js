@@ -27,6 +27,7 @@ import { writeReviewFile, acquireFileLock, shouldInvestigateTip } from "./review
 import { WALKTHROUGH_SCHEMA, PATCH_SCHEMA, validateWalkthrough, validatePatch } from "./walkthrough-schema.js";
 import { canReuseCache, canPatchCache, configFingerprint, inputHash, hash } from "./cache-policy.js";
 import { fetchLocalDiff, readDiffFile } from "./local-input.js";
+import { validateOrRepairWalkthrough } from "./walkthrough-repair.js";
 import { explainRepository, TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
 import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
@@ -964,7 +965,7 @@ Generate the walkthrough JSON. Important reminders:
     }
   }
 
-  validateWalkthrough(walkthrough, prData.diff);
+  walkthrough = await validateOrRepairWalkthrough(walkthrough, prData.diff, { onRepair: error => log("WARN", `Walkthrough validation failed (${error.message}); attempting one reference repair.`) });
 
   // Fix common Mermaid syntax issues (e.g. unquoted pipes in node labels)
   sanitizeWalkthroughDiagrams(walkthrough);
