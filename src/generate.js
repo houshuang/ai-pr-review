@@ -29,7 +29,7 @@ import { canReuseCache, canPatchCache, configFingerprint, inputHash, hash } from
 import { fetchLocalDiff, readDiffFile } from "./local-input.js";
 import { withTaskProgress } from "./task-progress.js";
 import { validateOrRepairWalkthrough } from "./walkthrough-repair.js";
-import { researchRepository, RESEARCH_VERSION } from "./repository-research.js";
+import { researchRepository } from "./repository-research.js";
 import { TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
 import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
@@ -41,7 +41,7 @@ const AI_PROVIDER = resolveAIProvider();
 const execAsync = promisify(execFile);
 const GH_OPTIONS = { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024, timeout: 30000 };
 const MODEL_TASKS = {
-  research: { version: RESEARCH_VERSION, provider: "codex", ...getTaskConfig("codex", "research") },
+  research: { provider: "codex", ...getTaskConfig("codex", "research") },
   generation: getTaskConfig(AI_PROVIDER, "generation"), patch: getTaskConfig(AI_PROVIDER, "patch"),
   investigation: { provider: "codex", ...getTaskConfig("codex", "investigation") },
 };
