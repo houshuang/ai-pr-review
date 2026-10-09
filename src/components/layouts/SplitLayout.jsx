@@ -1,3 +1,4 @@
+import { DescriptionButton } from "../DetailedDescription";
 import { h } from "preact";
 import { useRef } from "preact/hooks";
 import { data, reviewState, setReviewed } from "../../state";
@@ -43,6 +44,7 @@ export function SplitLayout({ callbacks }) {
               return (
                 <div key={s.id} class={`split-section ${reviewed ? "reviewed" : ""}`} data-split-section={esc(s.id)}>
                   <span class="section-number">{esc(s.title)}</span>
+                  <DescriptionButton scope={{ kind: "section", id: s.id }} />
                   <div class="narrative" dangerouslySetInnerHTML={{ __html: md(s.narrative) }}></div>
                   {s.callouts?.length > 0 && s.callouts.map((c, ci) => (
                     <div key={ci} class={`callout ${esc(c.type)}`}>

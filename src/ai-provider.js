@@ -178,7 +178,7 @@ export async function runCodex({
   if (sandbox === "workspace-write") {
     args.push("-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=true", "-c", "sandbox_workspace_write.exclude_slash_tmp=true");
   }
-  if (task !== "investigation") args.push("--disable", "shell_tool", "--disable", "shell_snapshot");
+  if (!["investigation", "research", "explanation"].includes(task)) args.push("--disable", "shell_tool", "--disable", "shell_snapshot");
   // Untrusted roots skip project .codex layers. Keep CODEX_HOME for existing auth.
   let root = workDir;
   while (dirname(root) !== root && !existsSync(join(root, ".git"))) root = dirname(root);
@@ -218,6 +218,7 @@ export async function runCodex({
       let stopError = null;
       let spawnError = null;
       let killTimer;
+      let pipeTimer;
       const stop = (err) => {
         if (stopError) return;
         stopError = err;
@@ -252,11 +253,18 @@ export async function runCodex({
         try { onProgress?.(text); } catch (err) { stop(err); }
       });
       child.on("error", (err) => { spawnError = err; });
-      child.stdin.on("error", (err) => stop(new Error(`Could not send prompt to Codex: ${err.message}`)));
+      child.stdin.on("error", (err) => {
+        const failure = new Error(`Could not send prompt to Codex: ${err.message}`);
+        // An early exit closes stdin before its exit status arrives; a live
+        // child that refuses input still needs bounded termination.
+        if (err.code === "EPIPE") pipeTimer = setTimeout(() => stop(failure), 250);
+        else stop(failure);
+      });
       child.on("close", (code) => {
         if (stopError && grouped) kill("SIGKILL");
         clearTimeout(timer);
         clearTimeout(killTimer);
+        clearTimeout(pipeTimer);
         signal?.removeEventListener("abort", abort);
         try {
           if (pending) reader.accept(pending);
@@ -274,11 +282,6 @@ export async function runCodex({
           }
         } catch (err) { reject(err); }
       });
-      // EPIPE means Codex exited before reading the prompt; "close" reports why.
-      child.stdin.on("error", (err) => {
-        if (err.code !== "EPIPE") reject(err);
-      });
-
       child.stdin.end(prompt);
     });
     try {

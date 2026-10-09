@@ -329,3 +329,18 @@ test("explicit runner model and effort overrides are validated before starting a
     assert.ok(args.includes('model_reasoning_effort="none"'));
   } finally { fake.cleanup(); }
 });
+
+
+test("repository teaching tasks can inspect source while remaining read-only", async () => {
+  const fake = fakeCodex(`fs.writeFileSync(output, 'answer');`);
+  try {
+    for (const task of ["research", "explanation"]) {
+      await fake.run({ task });
+      const { args } = JSON.parse(readFileSync(fake.capture, "utf8"));
+      assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
+      assert.ok(!args.includes("shell_tool"));
+      assert.ok(args.includes('model_reasoning_effort="high"'));
+      await assert.rejects(fake.run({ task, sandbox: "workspace-write" }), /only available for investigation/);
+    }
+  } finally { fake.cleanup(); }
+});

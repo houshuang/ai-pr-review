@@ -5,6 +5,8 @@
  *   node src/export-static.js <slug-or-path> [--output path.html] [--mode side-by-side|unified]
  */
 
+import { md } from "./utils.js";
+import { savedExplanations } from "./server-explanation.js";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, dirname, basename } from "path";
 import { fileURLToPath } from "url";
@@ -23,34 +25,6 @@ function esc(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-function md(text) {
-  if (!text) return "";
-  const codeBlocks = [];
-  let result = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-      const i = codeBlocks.length;
-      codeBlocks.push(`<pre><code${lang ? ` class="language-${lang}"` : ""}>${code.trim()}</code></pre>`);
-      return `\x00CB${i}\x00`;
-    })
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-    .replace(/^### (.+)$/gm, "<h4>$1</h4>")
-    .replace(/^## (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^# (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^- (.+)$/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>\n?)+/g, (match) => `<ul>${match}</ul>`)
-    .replace(/\n\n/g, "</p><p>")
-    .replace(/^(?!<[huplo])(.+)$/gm, (_, line) =>
-      line.trim() ? `<p>${line}</p>` : ""
-    )
-    .replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[i]);
-  return result;
 }
 
 function groupFilesByDirectory(filePaths) {
@@ -890,7 +864,7 @@ if (tocLinks.length && sections.length) {
 
 // ── Main ──
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   let inputPath = null;
   let outputPath = null;
@@ -944,6 +918,7 @@ function main() {
 
   // Build body content
   const sections = wt.sections || [];
+  const explanations = await savedExplanations(resolve(__dirname, ".."), data);
   const mainContent = [
     renderHeader(meta, wt, reviews),
     renderReviewsSummary(reviews),
@@ -951,6 +926,7 @@ function main() {
     renderOverview(wt),
     ...sections.map((s, i) => renderSection(s, i, parsedFiles, mode, gitHistory)),
     renderRemainingChanges(parsedFiles, wt, mode),
+    ...explanations.map(explanation => `<section class="review-section"><h2>${esc(explanation.title)}</h2><p>${esc(explanation.provenance)}</p><div class="narrative">${md(explanation.markdown)}</div><ul>${explanation.references.map(ref => `<li>${esc(ref.path)}:${ref.line} · ${esc(ref.revision)}</li>`).join("")}</ul></section>`),
     renderFileMap(wt),
     renderFooter(meta),
   ].join("\n");
@@ -1133,4 +1109,4 @@ ${getClientScript()}
   console.log(`Static walkthrough exported to: ${outputPath}`);
 }
 
-main();
+main().catch(error => { console.error(error.message); process.exitCode = 1; });

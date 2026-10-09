@@ -1,3 +1,4 @@
+import { DetailedDescription } from "./DetailedDescription";
 import { h } from "preact";
 import { useEffect, useCallback, useState } from "preact/hooks";
 import {
@@ -323,6 +324,7 @@ export function App() {
       <StaleBanner />
       <Layout callbacks={callbacks} />
       <ChatThread />
+      <DetailedDescription />
       <SelectionPopover />
       <Toast />
     </>

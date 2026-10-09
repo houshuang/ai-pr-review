@@ -15,7 +15,7 @@ export function fetchLocalDiff(baseBranch = "main", cwd = process.env.REVIEW_ORI
   const branch = git("branch", "--show-current");
   return {
     source: "local", title: branch || headSha.slice(0, 7), url: "", baseBranch, headBranch: branch,
-    baseSha, headSha, provenance: `local:${root}:${baseSha}:${headSha}`, repositoryPath: root,
+    baseSha, diffBaseSha: mergeBase, headSha, provenance: `local:${root}:${baseSha}:${headSha}`, repositoryPath: root,
     additions: Number(statMatch?.[2] || 0), deletions: Number(statMatch?.[3] || 0), changedFiles: Number(statMatch?.[1] || 0),
     body: git("log", "--oneline", `${baseSha}..${headSha}`), files: [], diff,
   };
@@ -26,5 +26,5 @@ export function readDiffFile(path, cwd = process.env.REVIEW_ORIGINAL_CWD || proc
   const absolutePath = resolve(cwd, path);
   const diff = readFileSync(absolutePath, "utf-8");
   return { source: "file", title: absolutePath, url: "", baseBranch: "unknown", headBranch: "unknown", baseSha: null, headSha: null,
-    provenance: `file:${absolutePath}:${hash(diff)}`, additions: 0, deletions: 0, changedFiles: 0, body: "", files: [], diff };
+    provenance: `file:${absolutePath}:${hash(diff)}`, additions: 0, deletions: 0, changedFiles: 0, body: "", files: [], repositoryPath: resolve(cwd), diff };
 }

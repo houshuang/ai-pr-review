@@ -1,3 +1,4 @@
+import { DescriptionButton } from "./DetailedDescription";
 import { h } from "preact";
 import { useCallback } from "preact/hooks";
 import {
@@ -92,6 +93,7 @@ export function HunkGroup({ filePath, fileHunks, sectionId }) {
         {ageBadge}
         {churnBadge}
         <span className={`hunk-importance importance-badge-${topImportance}`}>{topImportance}</span>
+        <DescriptionButton scope={{ kind: "file", path: filePath }} />
         <span className="hunk-toggle-icon">{isCollapsed ? "\u25b6" : "\u25bc"}</span>
       </div>
 

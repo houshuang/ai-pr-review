@@ -276,7 +276,7 @@ Use a current CLI supporting `--ignore-user-config`, `--output-schema`, and the 
 
 ### Calls and local data
 
-A generation normally makes one walkthrough call, followed by background Codex checks for its tips; incremental updates, syntax repair and retries may add calls. A matching cache avoids fresh walkthrough generation but may resume pending or blocked tip checks. Opening an existing viewer alone makes no AI calls; section chat invokes its recorded provider per message. Walkthroughs (`public/walkthroughs/`), repository/worktree caches (`.cache/`) and diagnostic logs (`logs/`) stay on your machine. GitHub comments and reviews are posted only when you submit them in the viewer.
+A fresh generation normally makes a repository research call and a walkthrough call, followed by background Codex checks for its tips; incremental updates, syntax repair and retries may add calls. A matching cache avoids fresh walkthrough generation but may resume pending or blocked tip checks. Opening an existing viewer alone makes no AI calls; section chat invokes its recorded provider per message. Walkthroughs (`public/walkthroughs/`), repository/worktree caches (`.cache/`) and diagnostic logs (`logs/`) stay on your machine. GitHub comments and reviews are posted only when you submit them in the viewer.
 
 ## Project structure
 
@@ -328,3 +328,53 @@ vite.config.js          Vite config + gh API proxy + chat middleware
 ## License
 
 MIT
+
+## Understanding difficult changes
+
+Generation now starts with a read-only Codex research pass over the exact reviewed
+repository and the diff's merge-base revision. It traces unchanged callers,
+storage and mutation paths, types and tests before the selected generation
+provider writes the walkthrough. Difficult sections explain the failure mechanism,
+algorithm passes and intermediate state, invariants, a worked example, alternatives
+and limitations. Mechanical propagation remains brief. Research is saved with the
+walkthrough and reused on an exact cache hit. A changed revision performs fresh
+research, including before incremental patch generation. Patch updates may revise
+sections affected indirectly through changed dependencies.
+
+If repository research cannot complete, generation can still use the diff. The
+viewer explicitly displays the research failure; it does not claim that generation
+inspected the whole repository. Use `--force` to retry research on a cached review.
+
+**Generate PR deep dive** appears in the header. **Generate detailed description**
+appears on sections, dashboard cards and individual files, including Remaining
+Changes. Each starts a dedicated read-only Codex agent with access to the reviewed
+head and base worktrees. The task can follow dependencies outside its selected
+files, but cannot edit the reviewed source or run tests. Test explanations describe
+inspection evidence, not freshly executed test results. Automatic review-tip
+investigations retain their separate test-capable workspaces.
+
+Descriptions open in a reading panel and are saved locally. Closing the panel
+keeps generation running; reopening it or reloading the viewer finds the same job
+or saved result. Cancel and retry controls handle interrupted or failed jobs. Up to
+two descriptions run per viewer server. Follow-up questions inspect the same
+repository revisions and include the saved explanation as context. Follow-up
+conversation is transient; it does not overwrite the saved description.
+
+Source buttons open numbered code at the cited head or base revision, including
+unchanged files and deleted base files. Paths and line numbers are validated before
+a description is saved. Static HTML exports include saved descriptions and their
+reference lists; generation and follow-up controls are available only in the local
+viewer. Exports do not embed the repository source viewer.
+
+Research and descriptions use Codex regardless of the walkthrough's selected
+provider, like automatic full-code checks. Configure them separately with
+`REVIEW_CODEX_RESEARCH_MODEL` / `REVIEW_CODEX_RESEARCH_EFFORT` and
+`REVIEW_CODEX_EXPLANATION_MODEL` / `REVIEW_CODEX_EXPLANATION_EFFORT`. Both default
+to high reasoning effort. Description caches include the generation identity,
+head/base revisions, scope, prompt version and explanation model settings.
+Background results from an older walkthrough never attach to its replacement.
+
+Descriptions live under `.cache/explanations/`. Repository snapshots live under
+`.cache/repos/`. For patch files, reconstruction uses the invoking repository's
+committed HEAD with the supplied patch and discloses that the original base is
+unknown. A patch that cannot be reconstructed blocks the deep dive.

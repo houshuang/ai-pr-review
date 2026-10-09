@@ -1,3 +1,4 @@
+import { DescriptionButton } from "./DetailedDescription";
 import { h } from "preact";
 import { useRef, useCallback } from "preact/hooks";
 import { useMermaid } from "../mermaid";
@@ -75,6 +76,7 @@ export function Section({ section, index }) {
           <h2>{section.title}</h2>
         </div>
         <div className="section-header-right">
+          <DescriptionButton scope={{ kind: "section", id: section.id }} />
           <label className="review-checkbox" title="Mark as reviewed">
             <input
               type="checkbox"

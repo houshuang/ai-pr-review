@@ -31,11 +31,12 @@ function recoverAbandoned(path, owner, token, depth = 0) {
 }
 
 // The PID lets a later run recover a lock abandoned by a killed resolver.
-export async function acquireFileLock(path, { timeoutMs = 30000 } = {}) {
+export async function acquireFileLock(path, { timeoutMs = 30000, signal } = {}) {
   mkdirSync(dirname(path), { recursive: true });
   const started = Date.now();
   const token = `${process.pid}:${randomUUID()}`;
   while (true) {
+    if (signal?.aborted) return null;
     try {
       // Acquisition and stale recovery share one gate, so a second reaper cannot
       // remove the replacement lock after the first reaper has recovered it.

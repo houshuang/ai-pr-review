@@ -1,5 +1,5 @@
 /** Model and reasoning settings are explicit so CLI preferences cannot change a review. */
-const TASKS = new Set(["generation", "patch", "verification", "investigation", "chat", "repair"]);
+const TASKS = new Set(["generation", "patch", "verification", "investigation", "chat", "repair", "research", "explanation"]);
 const CODEX_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const CLAUDE_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
@@ -10,7 +10,7 @@ export function getTaskConfig(provider, task = "generation", env = process.env) 
   const stage = `${prefix}_${task.toUpperCase()}`;
   const defaultModel = provider === "codex" ? "gpt-6.1-sol"
     : task === "repair" ? "claude-haiku-4-5-20251001" : "claude-opus-5-5";
-  const defaultEffort = task === "chat" ? "low" : task === "investigation" ? "high" : "medium";
+  const defaultEffort = task === "chat" ? "low" : ["investigation", "research", "explanation"].includes(task) ? "high" : "medium";
   const model = env[`${stage}_MODEL`] || env[`${prefix}_MODEL`] ||
     (provider === "claude" && task !== "repair" ? env.REVIEW_MODEL : null) || defaultModel;
   const effort = env[`${stage}_EFFORT`] || env[`${prefix}_EFFORT`] || defaultEffort;

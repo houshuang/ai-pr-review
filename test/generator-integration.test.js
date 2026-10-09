@@ -40,6 +40,14 @@ function fixture(t) {
   writeFileSync(statePath, JSON.stringify(initial));
   writeFileSync(countsPath, "{}");
   const prelude = `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst state = JSON.parse(fs.readFileSync(process.env.FIXTURE_STATE, 'utf8'));\nconst counts = JSON.parse(fs.readFileSync(process.env.FIXTURE_COUNTS, 'utf8'));\nconst record = (kind, data = {}) => fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({kind,args,...data}) + '\\n');\n`;
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  writeFileSync(join(bin, "git"), `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args.includes('https://github.com/example/repo.git')) { console.error('Fixture repository unavailable'); process.exit(1); }
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
+process.exit(result.status ?? 1);
+`, { mode: 0o755 });
   writeFileSync(join(bin, "gh"), prelude + `
 if (args[0] === 'pr' && args[1] === 'view') {
   const verification = args[args.indexOf('--json') + 1] === 'headRefOid,baseRefOid';
@@ -65,9 +73,9 @@ let prompt = '';
 process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => prompt += chunk);
 process.stdin.on('end', () => {
   const schema = JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema') + 1], 'utf8'));
-  const task = schema.required.includes('status') ? 'investigation' : schema.required.includes('updated_sections') ? 'patch' : 'generation';
+  const task = schema.required.includes('markdown') ? 'research' : schema.required.includes('status') ? 'investigation' : schema.required.includes('updated_sections') ? 'patch' : 'generation';
   record(task, {prompt, cwd: process.cwd()});
-  const result = task === 'investigation' ? {status:'verified',finding:'example.js:1 contains the expected change',evidence:{files:['example.js:1'],tests:[{command:'static inspection',outcome:'not-run',detail:'The exported constant is directly visible in the source'}]}} : state[task === 'patch' ? 'patch' : 'walkthrough'];
+  const result = task === 'research' ? {title:'Research',markdown:'The value is replaced. Preserve the exported contract.',references:[{path:'example.js',line:1,revision:'head'}]} : task === 'investigation' ? {status:'verified',finding:'example.js:1 contains the expected change',evidence:{files:['example.js:1'],tests:[{command:'static inspection',outcome:'not-run',detail:'The exported constant is directly visible in the source'}]}} : state[task === 'patch' ? 'patch' : 'walkthrough'];
   fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], JSON.stringify(result));
   console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,output_tokens:50}}));
 });
@@ -122,6 +130,8 @@ test("whole generator resumes blocked cached tips automatically and retains comp
   assert.equal(complete.walkthrough.review_tips[0].investigationState, "complete", JSON.stringify(complete));
   assert.equal(complete.meta.generationId, cached.meta.generationId);
   assert.equal(count(f, "generation"), 1);
+  assert.equal(count(f, "research"), 1);
+  assert.match(cached.research.markdown, /exported contract/);
   assert.equal(count(f, "investigation"), 1);
   succeeded(await f.run(["--local"]));
   assert.equal(count(f, "investigation"), 1);
@@ -133,6 +143,8 @@ test("whole generator publishes validated coverage and reuses exact cache withou
   succeeded(await f.run());
   const first = f.output();
   assert.equal(first.meta.source, "github");
+  assert.equal(first.research.status, "blocked");
+  assert.match(first.research.error, /Fixture repository unavailable/);
   assert.deepEqual(first.walkthrough.file_map.map(file => file.path), ["example.js"]);
   assert.equal(first.meta.baseSha, sha("a"));
   assert.equal(first.meta.headSha, sha("b"));
