@@ -266,7 +266,7 @@ function DescriptionPanel({ scope, identity }) {
                   id="description-question"
                   value={question}
                   onInput={(event) => setQuestion(event.target.value)}
-                  placeholder="Why do we need this pass? What if speech arrives late?"
+                  placeholder="Why is this structure necessary? What would break with a simpler alternative?"
                 />
                 <button className="btn" disabled={asking || !question.trim()}>
                   {asking ? "Inspecting code…" : "Ask follow-up"}

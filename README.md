@@ -341,6 +341,10 @@ walkthrough and reused on an exact cache hit. A changed revision performs fresh
 research, including before incremental patch generation. Patch updates may revise
 sections affected indirectly through changed dependencies.
 
+Invalid generated file or hunk references get one evidence-grounded repair attempt.
+The repaired result must pass the same validation; a failed repair preserves the
+previous review.
+
 If repository research cannot complete, generation can still use the diff. The
 viewer explicitly displays the research failure; it does not claim that generation
 inspected the whole repository. Use `--force` to retry research on a cached review.

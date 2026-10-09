@@ -73,9 +73,9 @@ let prompt = '';
 process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => prompt += chunk);
 process.stdin.on('end', () => {
   const schema = JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema') + 1], 'utf8'));
-  const task = schema.required.includes('markdown') ? 'research' : schema.required.includes('status') ? 'investigation' : schema.required.includes('updated_sections') ? 'patch' : 'generation';
+  const task = prompt.includes('Repair invalid walkthrough references.') ? 'semanticRepair' : schema.required.includes('markdown') ? 'research' : schema.required.includes('status') ? 'investigation' : schema.required.includes('updated_sections') ? 'patch' : 'generation';
   record(task, {prompt, cwd: process.cwd()});
-  const result = task === 'research' ? {title:'Research',markdown:'The value is replaced. Preserve the exported contract.',references:[{path:'example.js',line:1,revision:'head'}]} : task === 'investigation' ? {status:'verified',finding:'example.js:1 contains the expected change',evidence:{files:['example.js:1'],tests:[{command:'static inspection',outcome:'not-run',detail:'The exported constant is directly visible in the source'}]}} : state[task === 'patch' ? 'patch' : 'walkthrough'];
+  const result = task === 'research' ? {title:'Research',markdown:'The value is replaced. Preserve the exported contract.',references:[{path:'example.js',line:1,revision:'head'}]} : task === 'investigation' ? {status:'verified',finding:'example.js:1 contains the expected change',evidence:{files:['example.js:1'],tests:[{command:'static inspection',outcome:'not-run',detail:'The exported constant is directly visible in the source'}]}} : state[task === 'patch' ? 'patch' : task === 'semanticRepair' && state.repairedWalkthrough ? 'repairedWalkthrough' : 'walkthrough'];
   fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], JSON.stringify(result));
   console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,output_tokens:50}}));
 });
@@ -322,4 +322,16 @@ test("whole generator regenerates after local branch history is rewritten", asyn
   succeeded(await f.run(["--local"]));
   assert.equal(count(f, "patch"), 0);
   assert.equal(count(f, "generation"), 3);
+});
+
+test("whole generator repairs invalid references once before publishing validated output", async t => {
+  const f = fixture(t);
+  const invalid = walkthrough("Keep the worked example");
+  invalid.sections[0].hunks[0].endLine = 999;
+  f.update({ walkthrough: invalid, repairedWalkthrough: walkthrough("Keep the worked example") });
+  succeeded(await f.run());
+  assert.equal(count(f, "generation"), 1);
+  assert.equal(count(f, "semanticRepair"), 1);
+  assert.equal(f.output().walkthrough.sections[0].narrative, "Keep the worked example");
+  assert.equal(f.output().walkthrough.sections[0].hunks[0].endLine, 1);
 });
