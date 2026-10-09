@@ -2,7 +2,7 @@ import { h } from "preact";
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { data } from "../state";
-import { md } from "../utils";
+import { md, linkFileRefs } from "../utils";
 import { walkthroughIdentity } from "../walkthrough-poll";
 
 export const descriptionScope = signal(null);
@@ -248,7 +248,7 @@ function DescriptionPanel({ scope, identity }) {
               </p>
               <article
                 className="narrative"
-                dangerouslySetInnerHTML={{ __html: md(state.result.markdown) }}
+                dangerouslySetInnerHTML={{ __html: linkFileRefs(md(state.result.markdown)) }}
               />
               {references(state.result.references)}
               <button className="btn btn-sm" onClick={retry}>
@@ -259,7 +259,7 @@ function DescriptionPanel({ scope, identity }) {
                   <strong>{item.role === "user" ? "You" : "Codex"}</strong>
                   <div
                     className="narrative"
-                    dangerouslySetInnerHTML={{ __html: md(item.content) }}
+                    dangerouslySetInnerHTML={{ __html: linkFileRefs(md(item.content)) }}
                   />
                   {references(item.references)}
                 </section>

@@ -394,3 +394,12 @@ a changed input or research configuration starts fresh research. Failed research
 is not cached. Cached source references are rechecked against the pinned snapshots.
 Two parallel passes can use more AI work; elapsed-time savings vary with the PR,
 model latency and source-reading workload.
+
+Narrative `path/to/file.ts:line` references render as compact filename/line links.
+Hover or keyboard focus opens a source preview with the full path, recorded
+revision and highlighted cited lines. Clicking pins the preview; **Jump to code**
+opens the complete file at that line, and **Open on GitHub** targets the same exact
+revision. Base citations carry a base badge and show base code. Unchanged files
+work too; an ambiguous short filename reports an error instead of guessing.
+Escape closes the preview and returns focus. These interactions apply to overview,
+sections, annotations, callouts, split view, detailed descriptions and chat.

@@ -145,6 +145,32 @@ test("source viewing reads unchanged files at the chosen revision and rejects tr
   );
 });
 
+test("full source viewing includes the complete pinned file and refuses invalid display modes", async t => {
+  const { root, review } = repositoryFixture(t);
+  const context = await repositoryContext(review.meta, review.diff, join(root, 'cache'));
+  try {
+    const full = await readSource(context, { path: 'caller.js', line: 2, full: true });
+    assert.equal(full.start, 1);
+    assert.match(full.text, /1: import/);
+    await assert.rejects(readSource(context, { path: 'caller.js', full: 'yes' }), /Invalid source display mode/);
+  } finally { await context.cleanup(); }
+});
+
+test("short filenames resolve only when unambiguous in the recorded repository", async t => {
+  const { root, review, git } = repositoryFixture(t);
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(join(root, 'nested'));
+  writeFileSync(join(root, 'nested', 'unique.ts'), 'export const value = 1;\n');
+  writeFileSync(join(root, 'nested', 'caller.js'), 'another caller\n');
+  git('add', 'nested'); git('commit', '-m', 'source lookup fixture');
+  review.meta.headSha = git('rev-parse', 'HEAD');
+  const context = await repositoryContext(review.meta, review.diff, join(root, 'cache'));
+  try {
+    assert.equal((await readSource(context, { path: 'unique.ts' })).path, 'nested/unique.ts');
+    await assert.rejects(readSource(context, { path: 'caller.js' }), /Ambiguous filename/);
+  } finally { await context.cleanup(); }
+});
+
 test("scope comes from stored review and cannot target an unrelated file or section", () => {
   const review = {
     walkthrough: { title: "Change", sections: [{ id: "a", title: "A", hunks: [] }] },

@@ -10,7 +10,7 @@ import { parseDiff } from "../diff";
 import { startWalkthroughPolling } from "../walkthrough-poll";
 import { ensureMermaidLoaded } from "../mermaid";
 import { getActionItems } from "../keyboard";
-import { scrollToFileLine } from "../utils";
+import { SourcePreview } from "./SourcePreview";
 import { EditorialLayout } from "./layouts/EditorialLayout";
 import { SidebarLayout } from "./layouts/SidebarLayout";
 import { FocusLayout } from "./layouts/FocusLayout";
@@ -112,20 +112,6 @@ export function App() {
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode.value);
   }, [darkMode.value]);
-
-  // File reference click handler (delegated)
-  useEffect(() => {
-    const handler = (e) => {
-      const link = e.target.closest(".file-ref-link");
-      if (!link) return;
-      e.preventDefault();
-      const file = link.getAttribute("data-file-ref");
-      const line = parseInt(link.getAttribute("data-line"), 10);
-      if (file) scrollToFileLine(file, line);
-    };
-    document.addEventListener("click", handler);
-    return () => document.removeEventListener("click", handler);
-  }, []);
 
   // View mode class effect
   useEffect(() => {
@@ -249,7 +235,7 @@ export function App() {
   // Keyboard handler
   useEffect(() => {
     const handleKeyboard = (e) => {
-      if (!data.value || descriptionScope.value) return;
+      if (!data.value || descriptionScope.value || document.querySelector(".source-preview")) return;
 
       // Escape closes overlays: chat first, then action panel
       if (e.key === "Escape") {
@@ -325,6 +311,7 @@ export function App() {
       <Layout callbacks={callbacks} />
       <ChatThread />
       <DetailedDescription />
+      <SourcePreview />
       <SelectionPopover />
       <Toast />
     </>
