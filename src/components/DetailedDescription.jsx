@@ -177,15 +177,19 @@ function DescriptionPanel({ scope, identity }) {
       if (currentEpoch === epoch.current) setAsking(false);
     }
   };
-  const references = (refs) => (
-    <div className="description-references">
-      {refs?.map((ref, index) => (
-        <button key={index} className="btn-link" onClick={() => showSource(ref)}>
-          {ref.path}:{ref.line} · {ref.revision}
-        </button>
-      ))}
-    </div>
-  );
+  const references = (refs) =>
+    !refs?.length ? null : (
+      <details className="description-reference-list">
+        <summary>View {refs.length} source references</summary>
+        <div className="description-references">
+          {refs?.map((ref, index) => (
+            <button key={index} className="btn-link" onClick={() => showSource(ref)}>
+              {ref.path}:{ref.line} · {ref.revision}
+            </button>
+          ))}
+        </div>
+      </details>
+    );
   return (
     <div
       className="description-overlay"
