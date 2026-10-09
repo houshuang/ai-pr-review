@@ -276,7 +276,7 @@ Use a current CLI supporting `--ignore-user-config`, `--output-schema`, and the 
 
 ### Calls and local data
 
-A fresh generation normally makes a repository research call and a walkthrough call, followed by background Codex checks for its tips; incremental updates, syntax repair and retries may add calls. A matching cache avoids fresh walkthrough generation but may resume pending or blocked tip checks. Opening an existing viewer alone makes no AI calls; section chat invokes its recorded provider per message. Walkthroughs (`public/walkthroughs/`), repository/worktree caches (`.cache/`) and diagnostic logs (`logs/`) stay on your machine. GitHub comments and reviews are posted only when you submit them in the viewer.
+A fresh generation normally makes one or two repository research calls and a walkthrough call, followed by background Codex checks for its tips; incremental updates, syntax repair and retries may add calls. A matching cache avoids fresh walkthrough generation but may resume pending or blocked tip checks. Opening an existing viewer alone makes no AI calls; section chat invokes its recorded provider per message. Walkthroughs (`public/walkthroughs/`), repository/worktree caches (`.cache/`) and diagnostic logs (`logs/`) stay on your machine. GitHub comments and reviews are posted only when you submit them in the viewer.
 
 ## Project structure
 
@@ -331,9 +331,13 @@ MIT
 
 ## Understanding difficult changes
 
-Generation now starts with a read-only Codex research pass over the exact reviewed
-repository and the diff's merge-base revision. It traces unchanged callers,
-storage and mutation paths, types and tests before the selected generation
+Generation now starts with read-only Codex research over the exact reviewed
+repository and the diff's merge-base revision. PRs with at least six changed files
+and a mix of implementation and tests/docs use two concurrent passes: implementation
+and lifecycle, plus invariants and test evidence. Both can trace the whole repository;
+the writer reconciles their findings into one narrative. Smaller or homogeneous
+changes use one pass. Model and reasoning quality settings stay the same. Research
+traces unchanged callers, storage and mutation paths, types and tests before the selected generation
 provider writes the walkthrough. Difficult sections explain the failure mechanism,
 algorithm passes and intermediate state, invariants, a worked example, alternatives
 and limitations. Mechanical propagation remains brief. Research is saved with the
@@ -382,3 +386,11 @@ Descriptions live under `.cache/explanations/`. Repository snapshots live under
 `.cache/repos/`. For patch files, reconstruction uses the invoking repository's
 committed HEAD with the supplied patch and discloses that the original base is
 unknown. A patch that cannot be reconstructed blocks the deep dive.
+
+Completed research is cached separately under `.cache/research/`, keyed by the
+review input, exact revisions, repository, research instructions and model settings.
+A failed writer or a forced walkthrough regeneration can reuse verified research;
+a changed input or research configuration starts fresh research. Failed research
+is not cached. Cached source references are rechecked against the pinned snapshots.
+Two parallel passes can use more AI work; elapsed-time savings vary with the PR,
+model latency and source-reading workload.

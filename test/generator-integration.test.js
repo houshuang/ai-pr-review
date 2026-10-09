@@ -340,3 +340,22 @@ test("whole generator repairs invalid references once before publishing validate
   assert.equal(f.output().walkthrough.sections[0].narrative, "Keep the worked example");
   assert.equal(f.output().walkthrough.sections[0].hunks[0].endLine, 1);
 });
+
+test('writer failure preserves completed research for a later retry', async t => {
+  const f = fixture(t);
+  const git = (...args) => execFileSync('git', args, { cwd: f.invoking, stdio: 'ignore' });
+  git('init', '-b', 'main'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
+  writeFileSync(join(f.invoking, 'example.js'), 'old\n'); git('add', '.'); git('commit', '-m', 'base'); git('switch', '-c', 'feature');
+  writeFileSync(join(f.invoking, 'example.js'), 'new\n'); git('add', '.'); git('commit', '-m', 'change');
+  const invalid = walkthrough();
+  invalid.sections[0].hunks[0].file = 'invented.js';
+  f.update({ walkthrough: invalid });
+  assert.equal((await f.run(['--local'])).code, 1);
+  assert.equal(count(f, 'research'), 1);
+  f.update({ walkthrough: walkthrough('Recovered without another investigation') });
+  const retry = await f.run(['--local']);
+  succeeded(retry);
+  assert.match(retry.stdout, /Reusing completed repository research/);
+  assert.equal(count(f, 'research'), 1);
+  assert.equal(f.output().walkthrough.sections[0].narrative, 'Recovered without another investigation');
+});
