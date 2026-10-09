@@ -72,7 +72,7 @@ function unwrapErrorMessage(msg) {
   }
 }
 
-function eventReader(onText) {
+function eventReader(onText, onActivity) {
   const usage = { input: 0, cachedInput: 0, output: 0, reasoningOutput: 0 };
   let failure = null;
   let failedTurn = false;
@@ -100,6 +100,9 @@ function eventReader(onText) {
         failure = unwrapErrorMessage(event.message) || failure;
       }
       const item = event.item;
+      if (item?.type === "command_execution" && event.type === "item.started") onActivity?.({ type: "command-started" });
+      else if (item?.type === "command_execution" && event.type === "item.completed") onActivity?.({ type: "command-completed" });
+      else onActivity?.({ type: "activity" });
       if (item?.type === "agent_message" && ["item.started", "item.updated", "item.completed"].includes(event.type)) {
         emit(item.id || "message", item.text);
       } else if (event.type === "item.delta" && (item?.type === "agent_message" || !item)) {
@@ -147,6 +150,7 @@ export async function runCodex({
   outputSchema,
   onText,
   onProgress,
+  onActivity,
   onUsage,
   signal,
   timeoutMs = CODEX_TIMEOUT_MS,
@@ -212,7 +216,7 @@ export async function runCodex({
         }
         child.kill(signal);
       };
-      const reader = eventReader(onText);
+      const reader = eventReader(onText, onActivity);
       let pending = "";
       let stderr = "";
       let stopError = null;
