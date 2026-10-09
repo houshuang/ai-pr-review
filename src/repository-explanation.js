@@ -64,13 +64,14 @@ export function explanationScope(review, scope = { kind: "pr" }) {
   };
 }
 
-export async function repositoryContext(meta, diff, cacheDir) {
+export async function repositoryContext(meta, diff, cacheDir, { includeBase = true } = {}) {
   const invoking = meta.repositoryPath;
   let head, cleanup;
   if (!meta.headSha) {
     head = await createInvestigationWorkspace(meta, invoking, cacheDir, { diff });
     cleanup = head.cleanup;
   } else head = await ensureRepoSnapshot(meta, invoking, cacheDir);
+  if (!includeBase) return { head, cleanup: cleanup || (async () => {}) };
   let base;
   try {
     let baseSha = meta.diffBaseSha;
@@ -98,7 +99,7 @@ export async function repositoryContext(meta, diff, cacheDir) {
   }
 }
 
-export async function readSource(context, { path, line = 1, revision = "head" }) {
+export async function readSource(context, { path, line = 1, revision = "head", full = false }) {
   if (
     typeof path !== "string" ||
     path.length > 1000 ||
@@ -107,10 +108,16 @@ export async function readSource(context, { path, line = 1, revision = "head" })
     /[\x00-\x1f\\]/.test(path)
   )
     throw new HttpError(400, "Invalid source path");
+  if (typeof full !== "boolean") throw new HttpError(400, "Invalid source display mode");
   if (!["head", "base"].includes(revision) || !Number.isSafeInteger(line) || line < 1)
     throw new HttpError(400, "Invalid source revision or line");
   const snapshot = context[revision];
   if (!snapshot) throw new HttpError(404, "Base revision is unavailable");
+  if (!path.includes('/')) {
+    const matches = (await runCommand('git', ['ls-files', '--', path, `**/${path}`], { cwd: snapshot.path })).trim().split('\n').filter(candidate => candidate && candidate.split('/').pop() === path);
+    if (matches.length > 1) throw new HttpError(404, 'Ambiguous filename; use a full repository-relative path');
+    if (matches.length === 1) path = matches[0];
+  }
   // Git reads tracked blobs, so symlinks cannot expose files outside the snapshot.
   let text;
   try {
@@ -125,8 +132,9 @@ export async function readSource(context, { path, line = 1, revision = "head" })
   if (text.includes("\0")) throw new HttpError(400, "Binary source is not supported");
   const lines = text.split("\n");
   if (line > lines.length) throw new HttpError(400, "Source line is outside this file");
-  const start = Math.max(1, line - 12),
-    end = Math.min(lines.length, line + 45);
+  if (full && text.length > 2_000_000) throw new HttpError(413, "Source file is too large for full display");
+  const start = full ? 1 : Math.max(1, line - 12),
+    end = full ? lines.length : Math.min(lines.length, line + 45);
   return {
     path,
     revision,

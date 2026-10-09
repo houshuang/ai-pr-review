@@ -15,7 +15,7 @@ export function Overview() {
     <section id="section-overview" ref={ref}>
       <span className="section-number">Overview</span>
       <h2>The Big Picture</h2>
-      <div className="narrative" dangerouslySetInnerHTML={{ __html: md(wt.overview) }} />
+      <div className="narrative" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(wt.overview)) }} />
 
       {wt.architecture_diagram && (
         <div className="diagram-container">

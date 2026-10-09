@@ -112,6 +112,7 @@ export function createExplanationHandler({
   timeout = 15 * 60_000,
 }) {
   const jobs = new Map();
+  const diffBases = new Map();
   const dir = resolve(root, ".cache/explanations");
   const cached = (key) => readSavedDescription(resolve(dir, `${key}.json`));
   return async (req, res) => {
@@ -124,7 +125,11 @@ export function createExplanationHandler({
       const action = body.action || "load";
       let result;
       if (action === "source") {
-        const ctx = await context(review.meta, review.diff, repositoryCache(root));
+        const revisionKey = `${review.meta.owner}/${review.meta.repo}:${review.meta.baseSha}:${review.meta.headSha}`;
+        const meta = { ...review.meta, diffBaseSha: review.meta.diffBaseSha || diffBases.get(revisionKey) };
+        const ctx = await context(meta, review.diff, repositoryCache(root), { includeBase: body.reference?.revision === 'base' });
+        const baseSha = ctx.base?.provenance.match(/^committed snapshot ([a-f0-9]{40,64})$/)?.[1];
+        if (baseSha && review.meta.headSha) diffBases.set(revisionKey, baseSha);
         try {
           result = await source(ctx, body.reference || {});
         } finally {

@@ -2,7 +2,7 @@ import { h } from "preact";
 import { useState, useRef, useEffect } from "preact/hooks";
 import { signal } from "@preact/signals";
 import { data, currentSectionIndex } from "../state";
-import { md } from "../utils";
+import { md, linkFileRefs } from "../utils";
 import { walkthroughIdentity } from "../walkthrough-poll";
 
 // ── Chat state (signals) ──────────────────────
@@ -222,7 +222,7 @@ export function ChatThread() {
             </div>
             <div
               class="chat-msg-body"
-              dangerouslySetInnerHTML={{ __html: md(msg.content) }}
+              dangerouslySetInnerHTML={{ __html: linkFileRefs(md(msg.content)) }}
             />
           </div>
         ))}
@@ -236,7 +236,7 @@ export function ChatThread() {
             </div>
             <div
               class="chat-msg-body"
-              dangerouslySetInnerHTML={{ __html: md(streamContent) }}
+              dangerouslySetInnerHTML={{ __html: linkFileRefs(md(streamContent)) }}
             />
           </div>
         )}

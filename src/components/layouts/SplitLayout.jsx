@@ -2,7 +2,7 @@ import { DescriptionButton } from "../DetailedDescription";
 import { h } from "preact";
 import { useRef } from "preact/hooks";
 import { data, reviewState, setReviewed } from "../../state";
-import { esc, md } from "../../utils";
+import { esc, md, linkFileRefs } from "../../utils";
 import { getActionItems } from "../../keyboard";
 import { useMermaid } from "../../mermaid";
 import { ActionPanel } from "../ActionPanel";
@@ -37,7 +37,7 @@ export function SplitLayout({ callbacks }) {
         <div class="split-panes" ref={contentRef}>
           <div class="split-left">
             <div class="split-section" data-split-section="overview">
-              <div class="narrative" dangerouslySetInnerHTML={{ __html: md(wt.overview) }}></div>
+              <div class="narrative" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(wt.overview)) }}></div>
             </div>
             {sections.map((s) => {
               const reviewed = rs[s.id]?.reviewed;
@@ -45,11 +45,11 @@ export function SplitLayout({ callbacks }) {
                 <div key={s.id} class={`split-section ${reviewed ? "reviewed" : ""}`} data-split-section={esc(s.id)}>
                   <span class="section-number">{esc(s.title)}</span>
                   <DescriptionButton scope={{ kind: "section", id: s.id }} />
-                  <div class="narrative" dangerouslySetInnerHTML={{ __html: md(s.narrative) }}></div>
+                  <div class="narrative" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(s.narrative)) }}></div>
                   {s.callouts?.length > 0 && s.callouts.map((c, ci) => (
                     <div key={ci} class={`callout ${esc(c.type)}`}>
                       <span class="callout-label">{esc(c.label)}</span>
-                      <span dangerouslySetInnerHTML={{ __html: md(c.text) }}></span>
+                      <span dangerouslySetInnerHTML={{ __html: linkFileRefs(md(c.text)) }}></span>
                     </div>
                   ))}
                   <label class="review-checkbox">

@@ -87,23 +87,7 @@ export function groupFilesByDirectory(filePaths) {
   return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-/**
- * Post-process HTML to turn file:line references into clickable scroll links.
- * Matches patterns like `src/foo.js:42`, `config.ts:15-20`, `foo.py:100`.
- * Only matches inside text nodes (not already inside tags).
- */
-export function linkFileRefs(html) {
-  if (!html) return html;
-  // Match file:line references — file must have an extension, line is a number with optional range
-  // Negative lookbehind for < ensures we don't match inside HTML tags
-  return html.replace(
-    /(?:<code>)?([\w./-]+\.\w{1,10}):(\d+)(?:-(\d+))?(?:<\/code>)?/g,
-    (match, file, startLine, endLine) => {
-      const display = endLine ? `${file}:${startLine}-${endLine}` : `${file}:${startLine}`;
-      return `<a class="file-ref-link" data-file-ref="${file}" data-line="${startLine}" data-end-line="${endLine || startLine}" title="Jump to ${display}">${display}</a>`;
-    }
-  );
-}
+export { linkSourceReferences as linkFileRefs } from "./source-links.js";
 
 /**
  * Find and scroll to a file:line reference in the diff view.
