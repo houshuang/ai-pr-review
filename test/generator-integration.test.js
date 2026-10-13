@@ -231,7 +231,7 @@ test("whole generator regenerates for diverged GitHub history and preserves cach
   f.update({ walkthrough: invalid });
   const result = await f.run(["https://github.com/example/repo/pull/12", "--force"]);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /Unknown hunk file: invented.js/);
+  assert.match(result.stderr, /Unknown hunk file in section change: invented.js/);
   assert.equal(readFileSync(join(f.tool, "public", "walkthrough-data.json"), "utf8"), saved);
 });
 
@@ -332,6 +332,7 @@ test("whole generator regenerates after local branch history is rewritten", asyn
 test("whole generator repairs invalid references once before publishing validated output", async t => {
   const f = fixture(t);
   const invalid = walkthrough("Keep the worked example");
+  invalid.sections[0].hunks[0].startLine = 500;
   invalid.sections[0].hunks[0].endLine = 999;
   f.update({ walkthrough: invalid, repairedWalkthrough: walkthrough("Keep the worked example") });
   succeeded(await f.run());

@@ -32,6 +32,7 @@ import { validateOrRepairWalkthrough } from "./walkthrough-repair.js";
 import { researchRepository } from "./repository-research.js";
 import { TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
+import { citationProblems, gitRevisionReader } from "./citation-check.js";
 import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
 import { looksLikeBranchName, resolveBranchToPR } from "./resolve-branch.js";
 import { Agent as UndiciAgent } from "undici";
@@ -779,6 +780,19 @@ function formatGitHistoryForPrompt(gitHistory) {
   return parts.length > 0 ? "\n" + parts.join("\n") + "\n" : "";
 }
 
+// Citations are checked against the pinned head; a patch without a recorded head has nothing to check against.
+async function citationChecker(prData) {
+  if (!prData.headSha) return null;
+  try {
+    const head = await ensureRepoSnapshot(prData, prData.repositoryPath || null, resolve(__dirname, "..", ".cache", "repos"));
+    const reader = gitRevisionReader(head.path, "HEAD");
+    return (walkthrough) => citationProblems(walkthrough, { head: reader });
+  } catch (error) {
+    log("INFO", `Citation check unavailable: ${error.message}`);
+    return null;
+  }
+}
+
 async function generateWalkthrough(prData, previousWalkthrough = null) {
   let client = null;
   if (AI_PROVIDER === "claude") {
@@ -965,7 +979,12 @@ Generate the walkthrough JSON. Important reminders:
     }
   }
 
-  walkthrough = await validateOrRepairWalkthrough(walkthrough, prData.diff, { runner: runCodexWithProgress, onRepair: error => log("WARN", `Walkthrough validation failed (${error.message}); attempting one reference repair.`) });
+  walkthrough = await validateOrRepairWalkthrough(walkthrough, prData.diff, {
+    runner: runCodexWithProgress,
+    checkCitations: await citationChecker(prData),
+    onClamp: (count) => log("INFO", `Trimmed ${count} hunk range(s) to the changed lines they overlap.`),
+    onRepair: (error, round) => log("WARN", `Walkthrough validation found ${error.problems.length} problem(s); repair round ${round}.\n${error.message}`),
+  });
 
   // Fix common Mermaid syntax issues (e.g. unquoted pipes in node labels)
   sanitizeWalkthroughDiagrams(walkthrough);

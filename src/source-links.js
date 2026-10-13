@@ -1,4 +1,6 @@
-const citation = /\b(base(?:\s*:\s*|\s+))?([\w./-]+\.\w{1,10}):(\d+)(?:[-–](\d+))?/g;
+const citationSource = /\b(base(?:\s*:\s*|\s+))?([\w./-]+\.\w{1,10}):(\d+)(?:[-–](\d+))?/.source;
+
+export const sourceCitation = () => new RegExp(citationSource, "g");
 
 export function linkSourceReferences(html) {
   let protectedDepth = 0;
@@ -18,7 +20,7 @@ export function linkSourceReferences(html) {
       if (protectedDepth) {
         return part;
       }
-      const rendered = part.replace(citation, (match, base, path, line, end, offset) => {
+      const rendered = part.replace(sourceCitation(), (match, base, path, line, end, offset) => {
         if (
           path.startsWith("/") ||
           path.split("/").includes("..") ||

@@ -67,31 +67,46 @@ export function diffInventory(diff) {
   }));
 }
 
-export function validateWalkthrough(walkthrough, diff) {
+// Every reference problem at once, so one repair round can fix them all.
+export function walkthroughProblems(walkthrough, diff) {
   const plain = { ...walkthrough, review_tips: (walkthrough.review_tips || []).map((tip) => typeof tip === "string" ? tip : tip.tip) };
-  assertSchema(plain, WALKTHROUGH_SCHEMA);
+  try { assertSchema(plain, WALKTHROUGH_SCHEMA); }
+  catch (error) { return [{ check: "schema", message: error.message }]; }
+  const problems = [];
   const files = diffInventory(diff);
   const byPath = new Map(files.map((file) => [file.path, file]));
   const ids = new Set();
   for (const section of walkthrough.sections) {
-    if (!section.id || ids.has(section.id)) throw new Error(`Duplicate or empty section id: ${section.id}`);
+    if (!section.id || ids.has(section.id)) problems.push({ check: "section", message: `Duplicate or empty section id: ${section.id}` });
     ids.add(section.id);
     for (const hunk of section.hunks) {
       const file = byPath.get(hunk.file);
-      if (!file) throw new Error(`Unknown hunk file: ${hunk.file}`);
+      if (!file) { problems.push({ check: "hunk-file", message: `Unknown hunk file in section ${section.id}: ${hunk.file}` }); continue; }
       const contains = (line) => file.ranges.some((range) => line >= range.start && line <= range.end);
       if (hunk.startLine > hunk.endLine || !contains(hunk.startLine) || !contains(hunk.endLine)) {
-        throw new Error(`Hunk range outside diff: ${hunk.file}:${hunk.startLine}-${hunk.endLine}`);
+        const ranges = file.ranges.map((range) => `${range.start}-${range.end}`).join(", ");
+        problems.push({ check: "hunk-range", file: hunk.file, message: `Hunk range outside diff in section ${section.id}: ${hunk.file}:${hunk.startLine}-${hunk.endLine} (changed ranges: ${ranges})` });
       }
     }
   }
-  const descriptions = new Map();
+  const seen = new Set();
   for (const entry of walkthrough.file_map) {
-    if (!byPath.has(entry.path) || descriptions.has(entry.path)) throw new Error(`Unknown or duplicate file_map path: ${entry.path}`);
-    descriptions.set(entry.path, entry.description);
+    if (!byPath.has(entry.path) || seen.has(entry.path)) problems.push({ check: "file-map", message: `Unknown or duplicate file_map path: ${entry.path}` });
+    seen.add(entry.path);
   }
+  return problems;
+}
+
+export function problemsText(problems) {
+  return `${problems.length} problem${problems.length === 1 ? "" : "s"}:\n${problems.map((problem, index) => `${index + 1}. ${problem.message}`).join("\n")}`;
+}
+
+export function validateWalkthrough(walkthrough, diff) {
+  const problems = walkthroughProblems(walkthrough, diff);
+  if (problems.length) throw Object.assign(new Error(problems.length === 1 ? problems[0].message : problemsText(problems)), { problems });
+  const descriptions = new Map(walkthrough.file_map.map((entry) => [entry.path, entry.description]));
   // Coverage comes from the diff; the model supplies descriptions where it has context.
-  walkthrough.file_map = files.map((file) => ({ path: file.path, is_new: file.isNew, description: descriptions.get(file.path) || "Not included in the narrated sections; inspect the diff in Remaining Changes." }));
+  walkthrough.file_map = diffInventory(diff).map((file) => ({ path: file.path, is_new: file.isNew, description: descriptions.get(file.path) || "Not included in the narrated sections; inspect the diff in Remaining Changes." }));
   return walkthrough;
 }
 
