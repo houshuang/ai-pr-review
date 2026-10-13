@@ -1,20 +1,29 @@
 import { tmpdir } from 'node:os';
 import { readJsonBody, HttpError, sendError } from './server-http.js';
-import { loadChatContext, chatMessages } from './chat-context.js';
+import { loadChatContext, chatMessages, buildChatContext } from './chat-context.js';
 
 export function createChatHandler({ root, runCodex, resolveAIProvider, taskConfig, anthropicClient,
-  loadContext = loadChatContext, timeout = 5 * 60_000 }) {
+  loadContext = loadChatContext, repository = null, timeout = 5 * 60_000 }) {
   return async (req, res) => {
     const abort = new AbortController();
-    let timer;
+    let timer, release = null;
     const close = () => { if (!res.writableEnded) abort.abort(); };
     res.on('close', close);
     try {
       if (req.method !== 'POST') throw new HttpError(405, 'POST only');
       const body = await readJsonBody(req);
       const messages = chatMessages(body);
-      const { provider: storedProvider, systemPrompt } = await loadContext(root, body);
+      const { provider: storedProvider, systemPrompt: diffOnlyPrompt, review } = await loadContext(root, body);
       const provider = resolveAIProvider(storedProvider);
+      let systemPrompt = diffOnlyPrompt, cwd = tmpdir(), allowShell = false;
+      // Codex can read the reviewed head; without a pinned revision the chat stays on the section's hunks.
+      if (provider === 'codex' && repository && review?.meta?.headSha) {
+        try {
+          const context = await repository(review);
+          cwd = context.head.path; release = context.cleanup; allowShell = true;
+          systemPrompt = buildChatContext(review, body.sectionId, undefined, { repository: true }).systemPrompt;
+        } catch { /* The snapshot is optional; the diff-only prompt says what is missing. */ }
+      }
       const client = provider === 'claude' ? anthropicClient() : null;
       if (abort.signal.aborted) return;
       timer = setTimeout(() => abort.abort(), timeout);
@@ -26,7 +35,7 @@ export function createChatHandler({ root, runCodex, resolveAIProvider, taskConfi
         const answer = await runCodex({
           task: 'chat', systemPrompt,
           userPrompt: `Continue this conversation. Respond only with the assistant's next answer.\n\n${conversation}`,
-          cwd: tmpdir(), signal: abort.signal,
+          cwd, allowShell, signal: abort.signal,
           onText: delta => { if (!abort.signal.aborted && delta) { emitted = true; res.write(delta); } },
         });
         if (!emitted) res.write(answer);
@@ -48,6 +57,6 @@ export function createChatHandler({ root, runCodex, resolveAIProvider, taskConfi
       if (abort.signal.aborted) err = new HttpError(504, 'Chat request timed out or was disconnected');
       if (!res.destroyed) sendError(res, err);
     }
-    finally { clearTimeout(timer); res.off('close', close); }
+    finally { clearTimeout(timer); res.off('close', close); await release?.(); }
   };
 }

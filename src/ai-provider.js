@@ -147,6 +147,7 @@ export async function runCodex({
   model,
   effort,
   ignoreProjectInstructions = true,
+  allowShell = false,
   outputSchema,
   onText,
   onProgress,
@@ -182,7 +183,8 @@ export async function runCodex({
   if (sandbox === "workspace-write") {
     args.push("-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=true", "-c", "sandbox_workspace_write.exclude_slash_tmp=true");
   }
-  if (!["investigation", "research", "explanation"].includes(task)) args.push("--disable", "shell_tool", "--disable", "shell_snapshot");
+  // The sandbox stays read-only; the shell is how a repository-aware task reads files.
+  if (!allowShell && !["investigation", "research", "explanation"].includes(task)) args.push("--disable", "shell_tool", "--disable", "shell_snapshot");
   // Untrusted roots skip project .codex layers. Keep CODEX_HOME for existing auth.
   let root = workDir;
   while (dirname(root) !== root && !existsSync(join(root, ".git"))) root = dirname(root);

@@ -314,6 +314,10 @@ test("provided-context tasks disable shell tools and shell snapshots", async () 
       assert.equal(args[args.indexOf("shell_tool") - 1], "--disable", task);
       assert.equal(args[args.indexOf("shell_snapshot") - 1], "--disable", task);
     }
+    await fake.run({ task: "chat", allowShell: true });
+    const { args } = JSON.parse(readFileSync(fake.capture, "utf8"));
+    assert.ok(!args.includes("shell_tool"), "repository chat can read files");
+    assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
   } finally { fake.cleanup(); }
 });
 

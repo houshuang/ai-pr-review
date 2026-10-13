@@ -10,6 +10,7 @@ import { resolveAIProvider, runCodex } from './src/ai-provider.js';
 import { createGithubHandler, createExportHandler, validSlug, sendError } from './src/server-http.js';
 import { createExplanationHandler } from './src/server-explanation.js';
 import { createChatHandler } from './src/server-chat.js';
+import { repositoryContext } from './src/repository-explanation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logsDir = resolve(__dirname, 'logs');
@@ -77,6 +78,7 @@ export default defineConfig({
     endpointPlugin('export-endpoint', '/api/export', createExportHandler({ root: __dirname })),
     endpointPlugin('chat-middleware', '/api/chat', createChatHandler({
       root: __dirname, runCodex, resolveAIProvider, taskConfig: getTaskConfig,
+      repository: review => repositoryContext(review.meta, review.diff, resolve(__dirname, '.cache', 'repos'), { includeBase: false }),
       anthropicClient: () => {
         const apiKey = loadChatApiKey();
         if (!apiKey) throw new Error('No ANTHROPIC_API_KEY configured');
