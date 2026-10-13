@@ -465,6 +465,11 @@ strong { font-weight: 600; }
 .section-header-left { flex: 1; }
 .section-header-left .section-number { margin-bottom: 4px; }
 .section-header-left h2 { margin-bottom: 0; }
+.section-stale {
+  display: inline-block; margin-top: 6px; padding: 1px 8px; border-radius: 10px;
+  font-size: 12px; color: #8a5a00; background: #fff4d6; border: 1px solid #f0d58c;
+}
+html.dark .section-stale { color: #f3cf7a; background: #3a2e12; border-color: #6b5420; }
 
 .section-header-right {
   display: flex;

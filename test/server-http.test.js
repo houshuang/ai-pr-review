@@ -55,6 +55,8 @@ test('GitHub allowlist retains every viewer read and review operation', () => {
   for (const endpoint of ['repos/a/b/pulls/1', 'repos/a/b/pulls/1/comments', 'repos/a/b/pulls/1/reviews', `repos/a/b/compare/${'a'.repeat(40)}...${'b'.repeat(40)}`]) {
     assert.deepEqual(githubRequest({ endpoint }).args, ['api', endpoint, '--method', 'GET']);
   }
+  assert.equal(githubRequest({ endpoint: 'repos/a/b/pulls/1/files', data: { per_page: 100, page: '2' } }).args[1], 'repos/a/b/pulls/1/files?per_page=100&page=2');
+  assert.throws(() => githubRequest({ endpoint: 'repos/a/b/pulls/1/files', data: { page: '1&x=y' } }), /Invalid page/);
   const content = githubRequest({ endpoint: 'repos/a/b/contents/src/file name.js', data: { ref: 'abc/branch' } });
   assert.equal(content.args[1], 'repos/a/b/contents/src/file name.js?ref=abc%2Fbranch');
   assert.equal(githubRequest({ method: 'POST', endpoint: 'repos/a/b/pulls/1/reviews', data: { event: 'APPROVE', body: '' } }).input, '{"event":"APPROVE","body":""}');

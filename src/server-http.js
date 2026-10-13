@@ -73,6 +73,8 @@ export function githubRequest({ method = 'GET', endpoint, data = {} }) {
   if (method === 'GET') {
     if (/^pulls\/[1-9]\d*(?:\/(?:comments|reviews))?$/.test(route) || /^compare\/[a-f0-9]{7,40}\.\.\.[a-f0-9]{7,40}$/i.test(route)) {
       allowed = [];
+    } else if (/^pulls\/[1-9]\d*\/files$/.test(route)) {
+      allowed = ['per_page', 'page'];
     } else if (route.startsWith('contents/') && route.slice(9).split('/').every(part => part && !['.', '..'].includes(part))) {
       allowed = ['ref'];
     } else { throw new HttpError(400, 'Unsupported GitHub endpoint'); }
@@ -88,8 +90,8 @@ export function githubRequest({ method = 'GET', endpoint, data = {} }) {
   const fields = {};
   for (const [key, value] of Object.entries(data)) {
     if (!allowed.includes(key) || !['string', 'number'].includes(typeof value)) throw new HttpError(400, `Unsupported GitHub field: ${key}`);
-    if (['line', 'start_line'].includes(key)) {
-      if (!/^[1-9]\d*$/.test(String(value)) || !Number.isSafeInteger(Number(value))) throw new HttpError(400, 'Invalid line number');
+    if (['line', 'start_line', 'per_page', 'page'].includes(key)) {
+      if (!/^[1-9]\d*$/.test(String(value)) || !Number.isSafeInteger(Number(value))) throw new HttpError(400, key.endsWith('line') ? 'Invalid line number' : `Invalid ${key}`);
       fields[key] = Number(value);
     } else {
       if (['side', 'start_side'].includes(key) && !['LEFT', 'RIGHT'].includes(value)) throw new HttpError(400, 'Invalid comment side');

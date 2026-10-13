@@ -9,6 +9,7 @@ import {
 import { md, linkFileRefs } from "../utils";
 import { Callout } from "./Callout";
 import { HunkGroup } from "./HunkGroup";
+import { staleSections } from "./StaleBanner";
 
 export function Section({ section, index }) {
   const rs = reviewState.value;
@@ -19,6 +20,7 @@ export function Section({ section, index }) {
 
   if (hideReviewed.value && reviewed) return null;
 
+  const staleFiles = staleSections.value[section.id];
   const fileCount = new Set(section.hunks?.map((h) => h.file) || []).size;
 
   // Group hunks by file
@@ -74,6 +76,11 @@ export function Section({ section, index }) {
             {fileCount > 0 ? ` \u00b7 ${fileCount} file${fileCount !== 1 ? "s" : ""}` : ""}
           </span>
           <h2>{section.title}</h2>
+          {staleFiles && (
+            <span className="section-stale" title={`Changed since this walkthrough:\n${staleFiles.join("\n")}`}>
+              Changed since walkthrough · {staleFiles.length} file{staleFiles.length === 1 ? "" : "s"}
+            </span>
+          )}
         </div>
         <div className="section-header-right">
           <DescriptionButton scope={{ kind: "section", id: section.id }} />
