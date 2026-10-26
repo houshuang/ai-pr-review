@@ -8,7 +8,7 @@ const file = object({ path: string, description: string, is_new: { type: "boolea
 const section = object({
   id: string, title: string, narrative: string, diagram: nullable(string),
   hunks: array(object({
-    file: string, startLine: { type: "integer", minimum: 0 }, endLine: { type: "integer", minimum: 0 },
+    file: string, startLine: { type: "integer" }, endLine: { type: "integer" },
     annotation: string, importance: { type: "string", enum: ["critical", "important", "supporting", "context"] },
   })),
   callouts: array(object({ type: { type: "string", enum: ["insight", "warning", "pattern", "tradeoff", "question"] }, label: string, text: string })),
