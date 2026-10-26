@@ -79,7 +79,10 @@ function log(level, ...args) {
 
 function runCodexWithProgress(options) {
   const labels = { generation: "Writing walkthrough", patch: "Updating walkthrough", repair: "Repairing walkthrough" };
-  return withTaskProgress(labels[options.task] || "Codex task", onActivity => runCodex({ ...options, onActivity }), { report: message => log("INFO", message) });
+  return withTaskProgress(labels[options.task] || "Codex task", onActivity => runCodex({
+    ...options, onActivity,
+    onRetry: ({ attempt, delayMs, error }) => log("WARN", `Codex was rate limited (${error.message}); retry ${attempt} in ${Math.round(delayMs / 1000)}s.`),
+  }), { report: message => log("INFO", message) });
 }
 
 // --- JSON parse / repair / dump for AI responses ---

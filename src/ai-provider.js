@@ -27,6 +27,11 @@ const CODEX_NOISE = /^[a-z_]+(?:::[a-z_]+)+:|^hook:/;
 // point spawning Codex again for the remaining work.
 const CODEX_TIMEOUT_MS = 15 * 60 * 1000;
 
+// Transient capacity failures: Codex gives up after a few quick retries, but the
+// same request usually succeeds a minute later.
+const CODEX_TRANSIENT_FAILURE = /429|too many requests|rate.?limit|overloaded|503|service unavailable|capacity/i;
+const CODEX_RETRY_DELAYS_MS = [15_000, 45_000, 90_000];
+
 const CODEX_SETUP_FAILURE =
   /requires a newer version of Codex|unexpected argument .*--(?:ignore-user-config|output-schema)|unknown feature|unsupported model|model .* not (?:found|supported)|not logged in|invalid api key/i;
 
@@ -134,11 +139,33 @@ function codexFailure(code, stderr, prompt, eventFailure) {
     `Codex exited with code ${code}${detail ? `: ${detail}` : ""}${hint ? ` — ${hint}` : ""}`
   );
   err.codexSetupFailure = CODEX_SETUP_FAILURE.test(detail);
+  err.codexTransient = !err.codexSetupFailure && CODEX_TRANSIENT_FAILURE.test(detail);
   return err;
 }
 
 /** Run an ephemeral task, preserving CLI auth but ignoring user config. */
-export async function runCodex({
+export async function runCodex({ retryDelaysMs = CODEX_RETRY_DELAYS_MS, onRetry, ...options }) {
+  const deadline = Date.now() + (options.timeoutMs ?? CODEX_TIMEOUT_MS);
+  let streamed = false;
+  const onText = options.onText && ((...args) => { streamed = true; return options.onText(...args); });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await runCodexOnce({ ...options, onText, timeoutMs: Math.max(1, deadline - Date.now()) });
+    } catch (err) {
+      const delay = retryDelaysMs[attempt];
+      // Retrying after text has streamed would show the caller a second answer.
+      if (!err.codexTransient || streamed || delay === undefined || Date.now() + delay >= deadline || options.signal?.aborted) throw err;
+      onRetry?.({ attempt: attempt + 1, delayMs: delay, error: err });
+      await new Promise((resolvePromise, reject) => {
+        const abort = () => { clearTimeout(timer); reject(new Error("Codex run aborted")); };
+        const timer = setTimeout(() => { options.signal?.removeEventListener("abort", abort); resolvePromise(); }, delay);
+        options.signal?.addEventListener("abort", abort, { once: true });
+      });
+    }
+  }
+}
+
+async function runCodexOnce({
   systemPrompt,
   userPrompt,
   cwd = process.cwd(),

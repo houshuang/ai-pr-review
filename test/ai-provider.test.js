@@ -246,6 +246,39 @@ test("turn.failed rejects even when the CLI exits zero", async () => {
   finally { fake.cleanup(); }
 });
 
+test("rate-limited runs are retried with backoff until Codex succeeds", async () => {
+  const fake = fakeCodex(`const n = Number(fs.readFileSync(process.env.ATTEMPTS, "utf8") || 0) + 1;
+    fs.writeFileSync(process.env.ATTEMPTS, String(n));
+    if (n < 3) {
+      ${send({ type: "turn.failed", error: { message: "exceeded retry limit, last status: 429 Too Many Requests" } })}
+      process.exitCode = 1;
+    } else fs.writeFileSync(output, "ok");`);
+  const attempts = join(fake.dir, "attempts");
+  const env = { PATH: fake.dir, ATTEMPTS: attempts };
+  try {
+    writeFileSync(attempts, "");
+    const retries = [];
+    assert.equal(await fake.run({ env, retryDelaysMs: [1, 1, 1], onRetry: r => retries.push(r.attempt) }), "ok");
+    assert.deepEqual(retries, [1, 2]);
+    writeFileSync(attempts, "");
+    await assert.rejects(fake.run({ env, retryDelaysMs: [1] }), err => err.codexTransient && /429/.test(err.message));
+    assert.equal(readFileSync(attempts, "utf8"), "2");
+  } finally { fake.cleanup(); }
+});
+
+test("a rate-limited run that already streamed text is not retried", async () => {
+  const fake = fakeCodex(`fs.writeFileSync(process.env.ATTEMPTS, String(Number(fs.readFileSync(process.env.ATTEMPTS, "utf8") || 0) + 1));
+    ${send({ type: "item.completed", item: { id: "m", type: "agent_message", text: "partial" } })}
+    ${send({ type: "turn.failed", error: { message: "429 Too Many Requests" } })}
+    process.exitCode = 1;`);
+  const attempts = join(fake.dir, "attempts");
+  try {
+    writeFileSync(attempts, "");
+    await assert.rejects(fake.run({ env: { PATH: fake.dir, ATTEMPTS: attempts }, retryDelaysMs: [1, 1], onText: () => {} }), /429/);
+    assert.equal(readFileSync(attempts, "utf8"), "1");
+  } finally { fake.cleanup(); }
+});
+
 test("missing CLI and missing output produce actionable failures", async () => {
   await assert.rejects(runCodex({ userPrompt: "x", env: { PATH: "/does-not-exist" } }), err => {
     assert.equal(err.codexSetupFailure, true);
