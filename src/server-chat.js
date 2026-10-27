@@ -2,7 +2,7 @@ import { tmpdir } from 'node:os';
 import { readJsonBody, HttpError, sendError } from './server-http.js';
 import { loadChatContext, chatMessages, buildChatContext } from './chat-context.js';
 
-export function createChatHandler({ root, runCodex, resolveAIProvider, taskConfig, anthropicClient,
+export function createChatHandler({ root, runAgent, resolveAIProvider, taskConfig, anthropicClient,
   loadContext = loadChatContext, repository = null, timeout = 5 * 60_000 }) {
   return async (req, res) => {
     const abort = new AbortController();
@@ -16,24 +16,26 @@ export function createChatHandler({ root, runCodex, resolveAIProvider, taskConfi
       const { provider: storedProvider, systemPrompt: diffOnlyPrompt, review } = await loadContext(root, body);
       const provider = resolveAIProvider(storedProvider);
       let systemPrompt = diffOnlyPrompt, cwd = tmpdir(), allowShell = false;
-      // Codex can read the reviewed head; without a pinned revision the chat stays on the section's hunks.
-      if (provider === 'codex' && repository && review?.meta?.headSha) {
+      // Either CLI agent can read the reviewed head; without a pinned revision the chat stays on the section's hunks,
+      // which Claude answers through the API.
+      if (repository && review?.meta?.headSha) {
         try {
           const context = await repository(review);
           cwd = context.head.path; release = context.cleanup; allowShell = true;
           systemPrompt = buildChatContext(review, body.sectionId, undefined, { repository: true }).systemPrompt;
         } catch { /* The snapshot is optional; the diff-only prompt says what is missing. */ }
       }
-      const client = provider === 'claude' ? anthropicClient() : null;
+      const useAgent = provider === 'codex' || allowShell;
+      const client = useAgent ? null : anthropicClient();
       if (abort.signal.aborted) return;
       timer = setTimeout(() => abort.abort(), timeout);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Cache-Control', 'no-cache');
-      if (provider === 'codex') {
+      if (useAgent) {
         const conversation = messages.map(item => `${item.role === 'assistant' ? 'Assistant' : 'User'}: ${item.content}`).join('\n\n');
         let emitted = false;
-        const answer = await runCodex({
-          task: 'chat', systemPrompt,
+        const answer = await runAgent({
+          provider, task: 'chat', systemPrompt,
           userPrompt: `Continue this conversation. Respond only with the assistant's next answer.\n\n${conversation}`,
           cwd, allowShell, signal: abort.signal,
           onText: delta => { if (!abort.signal.aborted && delta) { emitted = true; res.write(delta); } },

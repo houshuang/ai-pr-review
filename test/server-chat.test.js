@@ -62,7 +62,7 @@ test('Codex chat streams before completion and does not duplicate the final answ
   let args;
   const handler = createChatHandler({ root: '/review', resolveAIProvider: provider => provider,
     loadContext: async () => ({ provider: 'codex', systemPrompt: 'actual code' }),
-    runCodex: async options => { args = options; options.onText('First '); await finished; options.onText('second'); return 'First second'; },
+    runAgent: async options => { args = options; options.onText('First '); await finished; options.onText('second'); return 'First second'; },
   });
   await withServer(handler, async url => {
     const response = await fetch(url, post({ message: 'Explain' }));
@@ -100,7 +100,7 @@ test('Claude chat selects chat model settings and forwards cancellation signal',
 test('timed out Codex chat aborts the runner and returns a failure before any text', async () => {
   const handler = createChatHandler({ root: '/review', timeout: 20, resolveAIProvider: provider => provider,
     loadContext: async () => ({ provider: 'codex', systemPrompt: 'code' }),
-    runCodex: options => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })),
+    runAgent: options => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })),
   });
   await withServer(handler, async url => {
     const response = await fetch(url, post({ message: 'Explain' }));
@@ -125,7 +125,7 @@ test('Codex chat runs in the reviewed head snapshot and releases it; a failed sn
   const handler = (repository) => createChatHandler({ root: '/review', resolveAIProvider: provider => provider,
     loadContext: async () => ({ provider: 'codex', systemPrompt: 'hunks only', review }),
     repository,
-    runCodex: async options => { args = options; return 'answer'; },
+    runAgent: async options => { args = options; return 'answer'; },
   });
   await withServer(handler(async () => ({ head: { path: '/snapshots/abc' }, cleanup: async () => { released++; } })), async url => {
     assert.equal(await (await fetch(url, post({ message: 'Who calls this?', sectionId: 'section' }))).text(), 'answer');
@@ -140,4 +140,26 @@ test('Codex chat runs in the reviewed head snapshot and releases it; a failed sn
   assert.notEqual(args.cwd, '/snapshots/abc');
   assert.equal(args.systemPrompt, 'hunks only');
   assert.equal(args.allowShell, false);
+});
+
+test('Claude chat reads the reviewed head through the agent and keeps the API for hunks-only chat', async () => {
+  let args, apiCalls = 0;
+  const review = fixture();
+  const handler = (repository) => createChatHandler({ root: '/review', resolveAIProvider: provider => provider,
+    loadContext: async () => ({ provider: 'claude', systemPrompt: 'hunks only', review }),
+    repository,
+    taskConfig: () => ({ model: 'chat-model', effort: 'low' }),
+    runAgent: async options => { args = options; return 'from the checkout'; },
+    anthropicClient: () => ({ messages: { stream: async function* () { apiCalls++; yield { type: 'content_block_delta', delta: { text: 'from the hunks' } }; } } }),
+  });
+  await withServer(handler(async () => ({ head: { path: '/snapshots/abc' }, cleanup: async () => {} })), async url => {
+    assert.equal(await (await fetch(url, post({ message: 'Who calls this?', sectionId: 'section' }))).text(), 'from the checkout');
+  });
+  assert.equal(args.provider, 'claude');
+  assert.equal(args.cwd, '/snapshots/abc');
+  assert.equal(args.allowShell, true);
+  await withServer(handler(null), async url => {
+    assert.equal(await (await fetch(url, post({ message: 'Who calls this?', sectionId: 'section' }))).text(), 'from the hunks');
+  });
+  assert.equal(apiCalls, 1);
 });

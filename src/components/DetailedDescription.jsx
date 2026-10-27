@@ -190,6 +190,8 @@ function DescriptionPanel({ scope, identity }) {
         </div>
       </details>
     );
+  // Explanations saved before the provider was recorded all came from Codex.
+  const agentName = state.result?.provider === "claude" ? "Claude Code" : "Codex";
   return (
     <div
       className="description-overlay"
@@ -243,7 +245,7 @@ function DescriptionPanel({ scope, identity }) {
           {state.result && (
             <>
               <p className="description-provenance">
-                {state.result.provenance} · Codex · Saved{" "}
+                {state.result.provenance} · {agentName} · Saved{" "}
                 {new Date(state.result.generatedAt).toLocaleString()}
               </p>
               <article
@@ -256,7 +258,7 @@ function DescriptionPanel({ scope, identity }) {
               </button>
               {thread.map((item, index) => (
                 <section key={index} className={`description-message ${item.role}`}>
-                  <strong>{item.role === "user" ? "You" : "Codex"}</strong>
+                  <strong>{item.role === "user" ? "You" : agentName}</strong>
                   <div
                     className="narrative"
                     dangerouslySetInnerHTML={{ __html: linkFileRefs(md(item.content)) }}

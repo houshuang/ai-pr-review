@@ -19,8 +19,8 @@ export async function withTaskProgress(
     const evidence = commands ? ` ${commandsFinished}/${commands} source commands finished.` : "";
     const recent =
       lastActivity === null
-        ? " Waiting for Codex activity."
-        : ` Last Codex activity ${Math.floor((Date.now() - lastActivity) / 1000)}s ago.`;
+        ? " Waiting for agent activity."
+        : ` Last agent activity ${Math.floor((Date.now() - lastActivity) / 1000)}s ago.`;
     report(`${label} still running (${elapsed()}).${evidence}${recent}`);
   }, intervalMs);
   try {

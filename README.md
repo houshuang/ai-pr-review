@@ -32,8 +32,8 @@ The first run asks whether Claude or Codex should generate walkthroughs by defau
 - Node.js 20+, pnpm (10 or 11)
 - [GitHub CLI](https://cli.github.com/) (`gh auth login`)
 - At least one provider:
-  - Claude: an Anthropic API key (`export ANTHROPIC_API_KEY=sk-ant-...` or add it to `.env`)
-  - Codex: the [Codex CLI](https://github.com/openai/codex), installed and logged in (`codex login`). It is required for automatic review-tip checks, including Claude-generated walkthroughs. Use a current CLI with `--ignore-user-config`, `--output-schema` and the feature flags described below.
+  - Claude: an Anthropic API key (`export ANTHROPIC_API_KEY=sk-ant-...` or add it to `.env`) for writing the walkthrough, plus the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) (`claude`, logged in) for repository research, section descriptions, repository chat and review-tip checks
+  - Codex: the [Codex CLI](https://github.com/openai/codex), installed and logged in (`codex login`). Use a current CLI with `--ignore-user-config`, `--output-schema` and the feature flags described below.
 
 ## How it works
 
@@ -210,10 +210,10 @@ The slug is printed at the end of generation (`Slug: owner-repo-123`). You can a
 
 Choose the provider for walkthrough generation, patching, syntax repair and section chat:
 
-- **Claude** — the Anthropic API, billed to your API key.
-- **Codex** — the Codex CLI on the account used by `codex login`, with explicit model and effort settings.
+- **Claude** — the Anthropic API, billed to your API key, for writing; the Claude Code CLI for tasks that read the repository (research, section descriptions, repository chat, review-tip checks).
+- **Codex** — the Codex CLI on the account used by `codex login`, with explicit model and effort settings, for everything.
 
-Automatic review-tip investigations always use Codex with the full code, regardless of this choice.
+The review records its provider, and later section chat, descriptions and tip checks for that review use the same one.
 
 The first time `review` generates a walkthrough it asks which one to use by default and saves the answer to `${XDG_CONFIG_HOME:-~/.config}/ai-pr-review/config.json`. Every run prints one line saying which provider it is using and how to change it.
 
@@ -248,7 +248,7 @@ A walkthrough records the provider that generated it: its chat uses the same pro
 | Task | Codex default | Claude default |
 |------|---------------|----------------|
 | Generation, patch | `gpt-6.1-sol`, medium effort | `claude-opus-5-5`, medium effort |
-| Automatic tip investigation | `gpt-6.1-sol`, high effort | Uses Codex |
+| Automatic tip investigation, research | `gpt-6.1-sol`, high effort | `claude-opus-5-5`, high effort (Claude Code, read-only) |
 | Section chat | `gpt-6.1-sol`, low effort | `claude-opus-5-5`, low effort |
 | Syntax repair | `gpt-6.1-sol`, medium effort | `claude-haiku-4-5-20251001`, no effort parameter |
 
@@ -274,9 +274,13 @@ The runner sets an explicit model/effort, uses `--ephemeral`, ignores user confi
 
 Use a current CLI supporting `--ignore-user-config`, `--output-schema`, and the `hooks`, `plugins`, `apps`, `skip_host_skill_discovery`, `shell_tool` and `shell_snapshot` feature flags. An unsupported flag fails with an upgrade hint instead of silently falling back to inherited configuration.
 
+### Claude Code execution
+
+Repository tasks under `--claude` run `claude -p` with `--setting-sources ""` and `--strict-mcp-config`, so your user and project settings, hooks, MCP servers and CLAUDE.md files are not loaded. Research, descriptions, repository chat and tip checks get only the `Read`, `Grep` and `Glob` tools, with the base snapshot added through `--add-dir`; text-only tasks get no tools. Structured results use `--json-schema`. Claude Code has no counterpart to Codex's write sandbox, so tip checks under Claude are static: they cite the source and record relevant tests as not-run with the command that would check them. Authentication comes from your existing Claude Code login.
+
 ### Calls and local data
 
-A fresh generation normally makes one or two repository research calls and a walkthrough call, followed by background Codex checks for its tips; incremental updates, syntax repair and retries may add calls. A matching cache avoids fresh walkthrough generation but may resume pending or blocked tip checks. Opening an existing viewer alone makes no AI calls; section chat invokes its recorded provider per message. Walkthroughs (`public/walkthroughs/`), repository/worktree caches (`.cache/`) and diagnostic logs (`logs/`) stay on your machine. GitHub comments and reviews are posted only when you submit them in the viewer.
+A fresh generation normally makes one or two repository research calls and a walkthrough call, followed by background checks for its tips; incremental updates, syntax repair and retries may add calls. A matching cache avoids fresh walkthrough generation but may resume pending or blocked tip checks. Opening an existing viewer alone makes no AI calls; section chat invokes its recorded provider per message. Walkthroughs (`public/walkthroughs/`), repository/worktree caches (`.cache/`) and diagnostic logs (`logs/`) stay on your machine. GitHub comments and reviews are posted only when you submit them in the viewer.
 
 ## Project structure
 
@@ -284,14 +288,15 @@ A fresh generation normally makes one or two repository research calls and a wal
 bin/review              CLI entry point (bash)
 src/
   generate.js           Walkthrough generator — fetches PR data, calls the selected AI
-  ai-provider.js        Codex CLI runner shared by generation, tips and chat
+  ai-provider.js        Codex CLI runner and the provider dispatch for agent tasks
+  claude-agent.js       Claude Code CLI runner with the same contract
   models.js             Explicit model/effort defaults and per-task overrides
   walkthrough-schema.js JSON schemas, semantic validation and derived coverage
   cache-policy.js       Input and configuration cache identity
   local-input.js        Committed local diffs and invoking-directory patch paths
   provider-config.js    Provider choice: flags, env, saved default, first-run prompt
   resolve-branch.js     Resolves a bare branch name to its PR
-  resolve-info-tips.js  Background Codex review-tip checks
+  resolve-info-tips.js  Background review-tip checks with the review's provider
   repo-snapshot.js      Exact-revision repository snapshots and private worktrees
   review-storage.js     Locked atomic writes and generation-bound tip updates
   chat-context.js       Stored section narrative and actual code context
@@ -331,7 +336,7 @@ MIT
 
 ## Understanding difficult changes
 
-Generation now starts with read-only Codex research over the exact reviewed
+Generation now starts with read-only research by the selected provider's CLI agent over the exact reviewed
 repository and the diff's merge-base revision. PRs with at least six changed files
 and a mix of implementation and tests/docs use two concurrent passes: implementation
 and lifecycle, plus invariants and test evidence. Both can trace the whole repository;

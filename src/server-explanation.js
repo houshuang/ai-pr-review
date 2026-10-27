@@ -7,6 +7,7 @@ import { chatMessages } from "./chat-context.js";
 import { acquireFileLock } from "./review-storage.js";
 import { hash } from "./cache-policy.js";
 import { getTaskConfig } from "./models.js";
+import { resolveAIProvider } from "./ai-provider.js";
 import {
   explanationScope,
   explainRepository,
@@ -47,7 +48,7 @@ export function explanationKey(review, scope) {
       base: review.meta.baseSha,
       scope,
       version: EXPLANATION_VERSION,
-      task: getTaskConfig("codex", "explanation"),
+      task: getTaskConfig(resolveAIProvider(review.meta?.aiProvider), "explanation"),
     }),
   );
 }

@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { getTaskConfig } from "./models.js";
 import { normalizeProvider, resolveProviderSync } from "./provider-config.js";
+import { runClaude } from "./claude-agent.js";
 
 /**
  * An explicit value (e.g. the provider recorded in a walkthrough) wins;
@@ -12,6 +13,11 @@ import { normalizeProvider, resolveProviderSync } from "./provider-config.js";
  */
 export function resolveAIProvider(value) {
   return value ? normalizeProvider(value) : resolveProviderSync().provider;
+}
+
+/** Runs a CLI agent task with the selected provider: `codex exec` or `claude -p`. */
+export function runAgent({ provider, ...options }) {
+  return resolveAIProvider(provider) === "claude" ? runClaude(options) : runCodex(options);
 }
 
 // `codex exec` writes its whole human-readable transcript to stderr — banner,

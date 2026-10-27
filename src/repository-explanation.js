@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { parse } from "diff2html";
 import { ensureRepoSnapshot, createInvestigationWorkspace } from "./repo-snapshot.js";
-import { runCodex } from "./ai-provider.js";
+import { resolveAIProvider, runAgent } from "./ai-provider.js";
 import { runCommand, HttpError } from "./server-http.js";
 
 export const EXPLANATION_VERSION = 1;
@@ -152,7 +152,7 @@ export async function readSource(context, { path, line = 1, revision = "head", f
 export async function explainRepository(
   review,
   scope,
-  { runner = runCodex, cacheDir, signal, message, onActivity, focus, context: suppliedContext, history = [], research = false } = {},
+  { runner = runAgent, cacheDir, signal, message, onActivity, focus, context: suppliedContext, history = [], research = false } = {},
 ) {
   const selection = explanationScope(review, scope);
   const context = suppliedContext || await repositoryContext(review.meta, review.diff, cacheDir);
@@ -171,8 +171,10 @@ ${message ? `Prior discussion:\n${JSON.stringify(history)}\nFollow-up question: 
 Return JSON with title, markdown and references (path, line, revision head/base). Every important code claim needs a reference. Deduplicate references and select at most 100 important source locations. Keep markdown under 100,000 characters; return a nonempty title and markdown. Do not use markdown links; cite file:line in prose.`;
     const result = JSON.parse(
       await runner({
+        provider: review.meta.aiProvider,
         task: research ? "research" : "explanation",
         cwd: context.head.path,
+        readableDirs: [context.base?.path],
         systemPrompt: TEACHING_INSTRUCTIONS,
         userPrompt,
         outputSchema: EXPLANATION_SCHEMA,
@@ -209,6 +211,7 @@ Return JSON with title, markdown and references (path, line, revision head/base)
       ...result,
       references,
       scope: selection.scope,
+      provider: resolveAIProvider(review.meta.aiProvider),
       provenance: context.head.provenance,
       baseProvenance: context.base?.provenance || null,
       generatedAt: new Date().toISOString(),

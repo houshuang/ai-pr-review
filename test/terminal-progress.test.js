@@ -19,7 +19,7 @@ test("parallel progress retains distinct rows and updates them in place with ela
     f.display.line("Implementation research started.");
     f.display.line("Invariant and test research started.");
     f.display.line(
-      "Implementation research still running (2m 30s). 20/20 source commands finished. Last Codex activity 11s ago.",
+      "Implementation research still running (2m 30s). 20/20 source commands finished. Last agent activity 11s ago.",
     );
     assert.match(f.read(), /Implementation\s+2:30\s+20 source commands/);
     assert.match(f.read(), /Tests & invariants/);

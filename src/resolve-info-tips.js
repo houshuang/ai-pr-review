@@ -1,10 +1,10 @@
-/** Investigate every review tip with Codex in a disposable worktree. */
+/** Investigate every review tip with the walkthrough's CLI agent in a disposable worktree. */
 import { readFileSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireFileLock, updateReviewTip, sameReview, shouldInvestigateTip } from "./review-storage.js";
 import { createInvestigationWorkspace, safeRepoPath } from "./repo-snapshot.js";
-import { runCodex } from "./ai-provider.js";
+import { resolveAIProvider, runAgent } from "./ai-provider.js";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const logs = resolve(directory, "..", "logs");
@@ -36,8 +36,8 @@ const verdictSchema = {
   }, required: ["status", "finding", "evidence"], additionalProperties: false,
 };
 
-function blocked(reason, provenance) {
-  return { status: "info", finding: reason, investigationState: "blocked", investigationProvider: "codex", investigationProvenance: provenance || null, resolved: false, pending: false };
+function blocked(reason, provenance, provider) {
+  return { status: "info", finding: reason, investigationState: "blocked", investigationProvider: provider, investigationProvenance: provenance || null, resolved: false, pending: false };
 }
 
 function parseVerdict(text, repoPath) {
@@ -58,11 +58,12 @@ function parseVerdict(text, repoPath) {
     } catch (error) { log(`Invalid file evidence: ${error.message}`); continue; }
     return value;
   }
-  throw new Error("Codex did not return a valid verdict with file evidence and test results");
+  throw new Error("The agent did not return a valid verdict with file evidence and test results");
 }
 
 async function investigate(meta, tip, invokingPath, diff) {
-  if (setupFailure) return blocked(setupFailure);
+  const provider = resolveAIProvider(meta.aiProvider);
+  if (setupFailure) return blocked(setupFailure, null, provider);
   let workspace;
   const deadline = Date.now() + MAX_INVESTIGATION_MS;
   try {
@@ -79,13 +80,13 @@ Diff context (may be truncated; inspect full files in the worktree):
 ${diff.slice(0, 16000)}
 
 Return ONLY JSON {"status":"verified|concern|info","finding":"specific conclusion with file:line references","evidence":{"files":["path:line"],"tests":[{"command":"exact command run or proposed","outcome":"passed|failed|not-run","detail":"observed result, or exact blocker"}]}}.
-verified means the check is addressed or not an issue after inspecting the full code. concern means a concrete issue remains; explain the failure and evidence. info means a required check is blocked by unavailable environment/external context; describe exactly what is missing. Run tests whenever feasible; if static analysis completely settles a check and no runtime test is useful, record not-run with that specific reason. Never claim a test passed unless it ran. An infrastructure failure is not a code verdict.`;
+verified means the check is addressed or not an issue after inspecting the full code. concern means a concrete issue remains; explain the failure and evidence. info means a required check is blocked by unavailable environment/external context; describe exactly what is missing. Run tests whenever feasible; if static analysis completely settles a check and no runtime test is useful, record not-run with that specific reason. Never claim a test passed unless it ran. An infrastructure failure is not a code verdict.${provider === "claude" ? "\n\nThis run has read-only file tools and no shell: settle the check from the source, and record each relevant test as not-run with the exact command that would check it." : ""}`;
     const usage = { input: 0, output: 0, cachedInput: 0 };
     let verdict;
     let request = prompt;
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (Date.now() >= deadline) throw new Error("Investigation deadline expired before Codex could finish the check");
-      const text = await runCodex({ userPrompt: request, task: "investigation", sandbox: "workspace-write", cwd: workspace.path, outputSchema: verdictSchema, timeoutMs: Math.max(1, deadline - Date.now()), signal: controller.signal, env: { ...process.env, npm_config_cache: resolve(workspace.path, ".review-test-cache", "npm"), npm_config_store_dir: resolve(workspace.path, ".review-test-cache", "pnpm"), XDG_CACHE_HOME: resolve(workspace.path, ".review-test-cache") }, onUsage: (value) => { for (const key of Object.keys(usage)) usage[key] += value?.[key] || 0; } });
+      if (Date.now() >= deadline) throw new Error("Investigation deadline expired before the agent could finish the check");
+      const text = await runAgent({ provider, userPrompt: request, task: "investigation", sandbox: "workspace-write", cwd: workspace.path, outputSchema: verdictSchema, timeoutMs: Math.max(1, deadline - Date.now()), signal: controller.signal, env: { ...process.env, npm_config_cache: resolve(workspace.path, ".review-test-cache", "npm"), npm_config_store_dir: resolve(workspace.path, ".review-test-cache", "pnpm"), XDG_CACHE_HOME: resolve(workspace.path, ".review-test-cache") }, onUsage: (value) => { for (const key of Object.keys(usage)) usage[key] += value?.[key] || 0; } });
       try { verdict = parseVerdict(text, workspace.path); }
       catch (error) {
         if (attempt === 1 || Date.now() >= deadline) throw error;
@@ -95,11 +96,11 @@ verified means the check is addressed or not an issue after inspecting the full 
       if (verdict.status !== "info" || Date.now() >= deadline) break;
       request = `${prompt}\n\nYour previous investigation remained incomplete: ${JSON.stringify(verdict)}. Make one final attempt to run the missing relevant local checks or install dependencies in this worktree. If a concrete external prerequisite prevents completion, describe it precisely. Do not repeat a vague recommendation to run tests.`;
     }
-    return { ...verdict, investigationState: verdict.status === "info" ? "blocked" : "complete", investigationProvider: "codex", investigationProvenance: workspace.provenance, resolved: verdict.status !== "info", pending: false, usage };
+    return { ...verdict, investigationState: verdict.status === "info" ? "blocked" : "complete", investigationProvider: provider, investigationProvenance: workspace.provenance, resolved: verdict.status !== "info", pending: false, usage };
   } catch (error) {
     if (error.codexSetupFailure) setupFailure = error.message;
     log(`Investigation blocked for ${tip.tip.slice(0, 80)}: ${error.message}`);
-    return blocked(error.message, workspace?.provenance);
+    return blocked(error.message, workspace?.provenance, provider);
   } finally {
     if (workspace) await workspace.cleanup();
   }
@@ -121,12 +122,13 @@ async function main() {
   const current = () => sameReview(JSON.parse(readFileSync(jsonPath, "utf8")).meta, expected.meta);
   const tips = (expected.walkthrough?.review_tips || []).filter(shouldInvestigateTip).map((tip) => typeof tip === "string" ? { tip } : tip);
   try {
-    log(`Investigating ${tips.length} full-code review checks with Codex`);
+    const provider = resolveAIProvider(expected.meta.aiProvider);
+    log(`Investigating ${tips.length} full-code review checks with ${provider}`);
     let cursor = 0;
     async function worker() {
       while (cursor < tips.length && !controller.signal.aborted && current()) {
         const tip = tips[cursor++];
-        if (!await publish(tip, { status: tip.status || "info", pending: true, resolved: false, investigationState: "running", investigationProvider: "codex" }, { startInvestigation: true })) continue;
+        if (!await publish(tip, { status: tip.status || "info", pending: true, resolved: false, investigationState: "running", investigationProvider: provider }, { startInvestigation: true })) continue;
         const verdict = await investigate(expected.meta, tip, expected.meta.repositoryPath || process.argv[3] || process.cwd(), expected.diff || "");
         await publish(tip, verdict);
         log(`${tip.tip.slice(0, 80)}: ${verdict.investigationState} / ${verdict.status}`);
@@ -136,7 +138,7 @@ async function main() {
     const failure = results.find((result) => result.status === "rejected");
     if (failure) throw failure.reason;
   } finally {
-    for (const tip of tips) await publish(tip, blocked(controller.signal.aborted ? "Investigation interrupted; retry on the next review run" : "Investigation did not finish; retry on the next review run"));
+    for (const tip of tips) await publish(tip, blocked(controller.signal.aborted ? "Investigation interrupted; retry on the next review run" : "Investigation did not finish; retry on the next review run", null, resolveAIProvider(expected.meta.aiProvider)));
     await release();
   }
 }

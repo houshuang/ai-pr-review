@@ -6,7 +6,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { getTaskConfig } from './src/models.js';
-import { resolveAIProvider, runCodex } from './src/ai-provider.js';
+import { resolveAIProvider, runAgent } from './src/ai-provider.js';
 import { createGithubHandler, createExportHandler, validSlug, sendError } from './src/server-http.js';
 import { createExplanationHandler } from './src/server-explanation.js';
 import { createChatHandler } from './src/server-chat.js';
@@ -77,7 +77,7 @@ export default defineConfig({
     endpointPlugin('gh-api-proxy', '/api/gh', createGithubHandler({ log: apiLog })),
     endpointPlugin('export-endpoint', '/api/export', createExportHandler({ root: __dirname })),
     endpointPlugin('chat-middleware', '/api/chat', createChatHandler({
-      root: __dirname, runCodex, resolveAIProvider, taskConfig: getTaskConfig,
+      root: __dirname, runAgent, resolveAIProvider, taskConfig: getTaskConfig,
       repository: review => repositoryContext(review.meta, review.diff, resolve(__dirname, '.cache', 'repos'), { includeBase: false }),
       anthropicClient: () => {
         const apiKey = loadChatApiKey();

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { hash, inputHash } from "./cache-policy.js";
 import { getTaskConfig } from "./models.js";
+import { resolveAIProvider } from "./ai-provider.js";
 import { acquireFileLock } from "./review-storage.js";
 import { explainRepository, repositoryContext, readSource } from "./repository-explanation.js";
 import { withTaskProgress } from "./task-progress.js";
@@ -47,7 +48,7 @@ export function researchKey(review, context) {
       diffBaseSha: review.meta.diffBaseSha || null,
       diff: hash(review.diff),
       version: RESEARCH_VERSION,
-      task: getTaskConfig("codex", "research"),
+      task: getTaskConfig(resolveAIProvider(review.meta.aiProvider), "research"),
     }),
   );
 }

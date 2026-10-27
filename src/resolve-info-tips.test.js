@@ -10,11 +10,11 @@ import { writeReviewFile } from "./review-storage.js";
 const src = dirname(fileURLToPath(import.meta.url));
 const requireLogs = (root) => readFileSync(join(root,"logs",readdirSync(join(root,"logs"))[0]),"utf8");
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
-function fixture(t, scenario = "normal", tips = [{ tip: "check code", status: "info", pending: true }]) {
+function fixture(t, scenario = "normal", tips = [{ tip: "check code", status: "info", pending: true }], provider = "codex") {
   const root = mkdtempSync(join(tmpdir(), "review-resolver-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "src"));
-  for (const name of ["resolve-info-tips.js", "review-storage.js", "repo-snapshot.js", "ai-provider.js", "models.js", "provider-config.js"]) copyFileSync(join(src, name), join(root, "src", name));
+  for (const name of ["resolve-info-tips.js", "review-storage.js", "repo-snapshot.js", "ai-provider.js", "claude-agent.js", "models.js", "provider-config.js"]) copyFileSync(join(src, name), join(root, "src", name));
   writeFileSync(join(root, "package.json"), '{"type":"module"}');
   mkdirSync(join(root, "public", "walkthroughs"), { recursive: true });
   mkdirSync(join(root, "bin"));
@@ -39,6 +39,14 @@ let input = ''; process.stdin.on('data', data => input += data); process.stdin.o
   fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], JSON.stringify(result));
   process.stdout.write(JSON.stringify({type:'turn.completed',usage:{input_tokens:10,output_tokens:5}}) + '\\n');
 });`, { mode: 0o755 });
+  writeFileSync(join(root, "bin", "claude"), `#!/usr/bin/env node
+import fs from 'node:fs';
+let input = ''; process.stdin.on('data', data => input += data); process.stdin.on('end', () => {
+  const args = process.argv.slice(2);
+  fs.appendFileSync(process.env.RECORD, JSON.stringify({cwd:process.cwd(),tools:args[args.indexOf('--tools')+1],prompt:input})+'\\n');
+  const verdict = {status:'concern',finding:fs.readFileSync('code.txt','utf8').trim(),evidence:{files:['code.txt:1'],tests:[{command:'node --test check.test.cjs',outcome:'not-run',detail:'read-only run'}]}};
+  process.stdout.write(JSON.stringify({type:'result',subtype:'success',is_error:false,usage:{},structured_output:verdict}) + '\\n');
+});`, { mode: 0o755 });
   const repo = join(root, "repository");
   execFileSync("git", ["init", repo], { stdio: "ignore" });
   const git = (...args) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -46,12 +54,12 @@ let input = ''; process.stdin.on('data', data => input += data); process.stdin.o
   writeFileSync(join(repo, "code.txt"), "evidence at recorded commit\n");
   writeFileSync(join(repo, "check.test.cjs"), `const fs=require('node:fs');require('node:test')('pinned code and writable artifacts',()=>{require('node:assert/strict').equal(fs.readFileSync('code.txt','utf8'),'evidence at recorded commit\\n');fs.writeFileSync('generated.txt','test output')});`);
   git("add", "."); git("commit", "-m", "reviewed");
-  const meta = { generationId: "first-generation", source: "local", headSha: git("rev-parse", "HEAD"), repositoryPath: repo, aiProvider: "claude" };
+  const meta = { generationId: "first-generation", source: "local", headSha: git("rev-parse", "HEAD"), repositoryPath: repo, aiProvider: provider };
   writeFileSync(join(repo, "code.txt"), "dirty evidence must not be seen\n");
   const content = { meta, diff: "reviewed diff", walkthrough: { review_tips: tips } };
   const jsonPath = join(root, "public", "walkthroughs", "review.json");
   writeFileSync(jsonPath, JSON.stringify(content));
-  const env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, RECORD: record, SCENARIO: scenario, REVIEW_AI_PROVIDER: "claude", ANTHROPIC_API_KEY: "", REVIEW_TIP_TIMEOUT_MS: scenario === "timeout" ? "1000" : "10000" };
+  const env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, RECORD: record, SCENARIO: scenario, REVIEW_AI_PROVIDER: provider, ANTHROPIC_API_KEY: "", REVIEW_TIP_TIMEOUT_MS: scenario === "timeout" ? "1000" : "10000" };
   const run = () => {
     const child = spawn(process.execPath, [join(root, "src", "resolve-info-tips.js"), "review", repo], { cwd: root, env, stdio: "pipe" });
     let stderr = "";
@@ -63,7 +71,7 @@ let input = ''; process.stdin.on('data', data => input += data); process.stdin.o
   return { root, repo, content, jsonPath, record, run, read: () => JSON.parse(readFileSync(jsonPath, "utf8")), calls: () => readFileSync(record, "utf8").trim().split("\n").map(JSON.parse) };
 }
 
-test("Claude-generated tips use Codex without an Anthropic key and execute tests in an isolated pinned worktree", async (t) => {
+test("Codex tips execute tests in an isolated pinned worktree without an Anthropic key", async (t) => {
   const f = fixture(t);
   await f.run();
   const tip = f.read().walkthrough.review_tips[0];
@@ -80,6 +88,19 @@ test("Claude-generated tips use Codex without an Anthropic key and execute tests
   assert.equal(existsSync(join(f.repo, "generated.txt")), false);
   await f.run();
   assert.equal(f.calls().length, 1);
+});
+
+test("Claude reviews investigate tips with Claude Code using read-only tools in the pinned worktree", async (t) => {
+  const f = fixture(t, "normal", undefined, "claude");
+  await f.run();
+  const tip = f.read().walkthrough.review_tips[0];
+  assert.equal(tip.investigationState, "complete", tip.finding + "\n" + requireLogs(f.root));
+  assert.equal(tip.investigationProvider, "claude");
+  assert.equal(tip.finding, "evidence at recorded commit");
+  const [call] = f.calls();
+  assert.equal(call.tools, "Read,Grep,Glob");
+  assert.match(call.prompt, /read-only file tools and no shell/);
+  assert.equal(existsSync(call.cwd), false);
 });
 
 test("every legacy diff verdict is investigated, including verified and concern", async (t) => {

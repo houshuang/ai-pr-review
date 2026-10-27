@@ -18,7 +18,7 @@ test("silent work emits elapsed heartbeats and source activity without exposing 
   );
   assert.equal(result, "notes");
   assert.match(messages[0], /started/);
-  assert(messages.some((message) => /Waiting for Codex activity/.test(message)));
+  assert(messages.some((message) => /Waiting for agent activity/.test(message)));
   assert(messages.some((message) => /1\/1 source commands finished/.test(message)));
   assert.match(messages.at(-1), /completed/);
   assert(!messages.join("\n").includes("secret"));

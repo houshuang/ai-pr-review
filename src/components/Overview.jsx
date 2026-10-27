@@ -46,7 +46,7 @@ export function Overview() {
                   <div className="tip-content">
                     <span className="tip-text" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(tipText)) }} />
                     {pending
-                      ? <span className="tip-finding tip-finding-pending">Codex is checking the full code and running relevant tests…</span>
+                      ? <span className="tip-finding tip-finding-pending">{t.investigationProvider === "claude" ? "Claude Code is checking the full code…" : "Codex is checking the full code and running relevant tests…"}</span>
                       : finding && <span className="tip-finding" dangerouslySetInnerHTML={{ __html: linkFileRefs(md(finding)) }} />}
                     {!pending && (blocked || complete) && <span className="tip-finding">
                       {blocked ? "Check blocked · retries on the next review run" : status === "concern" ? "Full-code check complete · issue confirmed" : "Full-code check complete"}

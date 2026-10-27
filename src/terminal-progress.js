@@ -11,6 +11,7 @@ const names = {
   "Updating walkthrough": "Update walkthrough",
   "Repairing walkthrough": "Repair references",
   "Codex task": "Codex",
+  "Claude Code task": "Claude Code",
 };
 const stages = Object.keys(names)
   .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
@@ -35,7 +36,7 @@ export function parseProgress(line) {
   const seconds = Number(match[4] || match[7] || match[9] || 0);
   const details = match[5] || "";
   const commands = details.match(/(\d+)\/(\d+) source commands finished/);
-  const idle = details.match(/Last Codex activity (\d+)s ago/);
+  const idle = details.match(/Last (?:agent|Codex) activity (\d+)s ago/);
   return {
     label: match[1],
     status,

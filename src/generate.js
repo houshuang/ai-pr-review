@@ -33,7 +33,7 @@ import { researchRepository } from "./repository-research.js";
 import { TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
 import { citationProblems, gitRevisionReader } from "./citation-check.js";
-import { formatCodexUsage, resolveAIProvider, runCodex } from "./ai-provider.js";
+import { formatCodexUsage, resolveAIProvider, runAgent } from "./ai-provider.js";
 import { looksLikeBranchName, resolveBranchToPR } from "./resolve-branch.js";
 import { Agent as UndiciAgent } from "undici";
 
@@ -77,11 +77,12 @@ function log(level, ...args) {
   }
 }
 
-function runCodexWithProgress(options) {
+function runAgentWithProgress(options) {
   const labels = { generation: "Writing walkthrough", patch: "Updating walkthrough", repair: "Repairing walkthrough" };
-  return withTaskProgress(labels[options.task] || "Codex task", onActivity => runCodex({
-    ...options, onActivity,
-    onRetry: ({ attempt, delayMs, error }) => log("WARN", `Codex was rate limited (${error.message}); retry ${attempt} in ${Math.round(delayMs / 1000)}s.`),
+  const name = AI_PROVIDER === "codex" ? "Codex" : "Claude Code";
+  return withTaskProgress(labels[options.task] || `${name} task`, onActivity => runAgent({
+    ...options, provider: AI_PROVIDER, onActivity,
+    onRetry: ({ attempt, delayMs, error }) => log("WARN", `${name} was rate limited (${error.message}); retry ${attempt} in ${Math.round(delayMs / 1000)}s.`),
   }), { report: message => log("INFO", message) });
 }
 
@@ -175,7 +176,7 @@ async function repairJSONWithAI(text, client) {
       "You are a JSON repair tool. The user provides a malformed JSON document. Return ONLY the corrected JSON — no commentary, no markdown fences. Preserve all content exactly; only fix syntax errors (unescaped quotes inside strings, raw newlines inside strings, missing/trailing commas, control characters).";
     let fixed;
     if (AI_PROVIDER === "codex") {
-      fixed = await runCodexWithProgress({
+      fixed = await runAgentWithProgress({
         systemPrompt,
         userPrompt: text,
         task: "repair",
@@ -887,7 +888,7 @@ Generate the walkthrough JSON. Important reminders:
   let text;
   if (AI_PROVIDER === "codex") {
     let usage = null;
-    text = await runCodexWithProgress({
+    text = await runAgentWithProgress({
       systemPrompt: SYSTEM_PROMPT,
       userPrompt,
       cwd: tmpdir(),
@@ -983,7 +984,7 @@ Generate the walkthrough JSON. Important reminders:
   }
 
   walkthrough = await validateOrRepairWalkthrough(walkthrough, prData.diff, {
-    runner: runCodexWithProgress,
+    runner: runAgentWithProgress,
     checkCitations: await citationChecker(prData),
     onClamp: (count) => log("INFO", `Trimmed ${count} hunk range(s) to the changed lines they overlap.`),
     onRepair: (error, round) => log("WARN", `Walkthrough validation found ${error.problems.length} problem(s); repair round ${round}.\n${error.message}`),
@@ -1214,7 +1215,7 @@ Return ONLY the JSON patch. Include all schema fields, using empty arrays and nu
   try {
     if (AI_PROVIDER === "codex") {
       let usage = null;
-      text = await runCodexWithProgress({
+      text = await runAgentWithProgress({
         systemPrompt,
         userPrompt,
         cwd: tmpdir(),
@@ -1515,10 +1516,10 @@ async function main() {
     const child = spawn(process.execPath, [resolverPath, slug, repoPath], {
       detached: true,
       stdio: ["ignore", resolverLog, resolverLog],
-      env: { ...process.env, REVIEW_AI_PROVIDER: "codex" },
+      env: { ...process.env, REVIEW_AI_PROVIDER: AI_PROVIDER },
     });
     child.unref();
-    console.log(`\n⟳ Codex is investigating ${pendingCount} review tip${pendingCount === 1 ? "" : "s"} against the full code in the background (pid ${child.pid})`);
+    console.log(`\n⟳ ${AI_PROVIDER === "codex" ? "Codex" : "Claude Code"} is investigating ${pendingCount} review tip${pendingCount === 1 ? "" : "s"} against the full code in the background (pid ${child.pid})`);
     console.log(`  The viewer will update automatically as results arrive.`);
   }
 }
