@@ -67,10 +67,14 @@ export function hasAnthropicKey(env = process.env, toolRoot = TOOL_ROOT) {
 }
 
 export function hasCodexCli(env = process.env) {
+  return hasCli("codex", env);
+}
+
+export function hasCli(name, env = process.env) {
   for (const dir of (env.PATH || "").split(delimiter)) {
     if (!dir) continue;
     try {
-      accessSync(join(dir, "codex"), constants.X_OK);
+      accessSync(join(dir, name), constants.X_OK);
       return true;
     } catch {}
   }

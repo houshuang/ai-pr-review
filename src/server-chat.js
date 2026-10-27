@@ -31,26 +31,34 @@ export function createChatHandler({ root, runAgent, resolveAIProvider, taskConfi
       timer = setTimeout(() => abort.abort(), timeout);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Cache-Control', 'no-cache');
-      if (useAgent) {
+      let emitted = false;
+      const answerWithAgent = async (agentProvider, options = {}) => {
         const conversation = messages.map(item => `${item.role === 'assistant' ? 'Assistant' : 'User'}: ${item.content}`).join('\n\n');
-        let emitted = false;
         const answer = await runAgent({
-          provider, task: 'chat', systemPrompt,
+          provider: agentProvider, task: 'chat', systemPrompt,
           userPrompt: `Continue this conversation. Respond only with the assistant's next answer.\n\n${conversation}`,
-          cwd, allowShell, signal: abort.signal,
+          cwd, allowShell, signal: abort.signal, ...options,
           onText: delta => { if (!abort.signal.aborted && delta) { emitted = true; res.write(delta); } },
         });
         if (!emitted) res.write(answer);
-      } else {
+      };
+      if (useAgent) await answerWithAgent(provider);
+      else {
         const settings = taskConfig('claude', 'chat');
-        const stream = client.messages.stream({
-          model: settings.model,
-          output_config: { effort: settings.effort },
-          max_tokens: 4096, system: systemPrompt, messages,
-        }, { signal: abort.signal });
-        for await (const event of stream) {
-          if (abort.signal.aborted) break;
-          if (event.type === 'content_block_delta' && event.delta?.text) res.write(event.delta.text);
+        try {
+          const stream = client.messages.stream({
+            model: settings.model,
+            output_config: { effort: settings.effort },
+            max_tokens: 4096, system: systemPrompt, messages,
+          }, { signal: abort.signal });
+          for await (const event of stream) {
+            if (abort.signal.aborted) break;
+            if (event.type === 'content_block_delta' && event.delta?.text) { emitted = true; res.write(event.delta.text); }
+          }
+        } catch (err) {
+          // A failed API request that has not answered yet is retried through Codex.
+          if (emitted || abort.signal.aborted) throw err;
+          try { await answerWithAgent('codex', { fallback: false }); } catch { throw err; }
         }
       }
       if (abort.signal.aborted) throw new HttpError(504, 'Chat request timed out or was disconnected');

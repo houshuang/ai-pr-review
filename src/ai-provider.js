@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { getTaskConfig } from "./models.js";
-import { normalizeProvider, resolveProviderSync } from "./provider-config.js";
+import { hasCli, normalizeProvider, resolveProviderSync } from "./provider-config.js";
+import { QUOTA_EXHAUSTED } from "./agent-failure.js";
 import { runClaude } from "./claude-agent.js";
 
 /**
@@ -15,9 +16,37 @@ export function resolveAIProvider(value) {
   return value ? normalizeProvider(value) : resolveProviderSync().provider;
 }
 
-/** Runs a CLI agent task with the selected provider: `codex exec` or `claude -p`. */
-export function runAgent({ provider, ...options }) {
-  return resolveAIProvider(provider) === "claude" ? runClaude(options) : runCodex(options);
+export const AGENT_LABEL = { codex: "Codex", claude: "Claude Code" };
+
+/**
+ * Runs a CLI agent task with the selected provider: `codex exec` or `claude -p`.
+ * When that run fails, the same task runs once with the other CLI, if it is
+ * installed, within what is left of the timeout. No fallback after an abort,
+ * after text has streamed to the caller, or with REVIEW_AI_FALLBACK=off.
+ */
+export async function runAgent({ provider, fallback = true, onFallback, ...options }) {
+  const primary = resolveAIProvider(provider);
+  const secondary = primary === "claude" ? "codex" : "claude";
+  const run = (name, opts) => (name === "claude" ? runClaude(opts) : runCodex(opts));
+  const env = options.env || process.env;
+  const deadline = options.timeoutMs === undefined ? null : Date.now() + options.timeoutMs;
+  let streamed = false;
+  const onText = options.onText && ((...args) => { streamed = true; return options.onText(...args); });
+  try {
+    return await run(primary, { ...options, onText });
+  } catch (err) {
+    const remaining = deadline === null ? undefined : deadline - Date.now();
+    if (!fallback || streamed || options.signal?.aborted || remaining <= 0 || env.REVIEW_AI_FALLBACK === "off" || !hasCli(secondary, env)) throw err;
+    (onFallback || (({ error }) => console.warn(`${AGENT_LABEL[primary]} failed (${error.message}); trying ${AGENT_LABEL[secondary]}.`)))({ from: primary, to: secondary, error: err });
+    try {
+      return await run(secondary, { ...options, onText, ...(remaining === undefined ? {} : { timeoutMs: remaining }) });
+    } catch (fallbackErr) {
+      const combined = new Error(`${err.message}; ${AGENT_LABEL[secondary]} fallback also failed: ${fallbackErr.message}`);
+      combined.codexSetupFailure = Boolean((err.codexSetupFailure || err.quotaExhausted) && (fallbackErr.codexSetupFailure || fallbackErr.quotaExhausted));
+      combined.quotaExhausted = Boolean(err.quotaExhausted && fallbackErr.quotaExhausted);
+      throw combined;
+    }
+  }
 }
 
 // `codex exec` writes its whole human-readable transcript to stderr — banner,
@@ -144,8 +173,9 @@ function codexFailure(code, stderr, prompt, eventFailure) {
   const err = new Error(
     `Codex exited with code ${code}${detail ? `: ${detail}` : ""}${hint ? ` — ${hint}` : ""}`
   );
+  err.quotaExhausted = QUOTA_EXHAUSTED.test(detail);
   err.codexSetupFailure = CODEX_SETUP_FAILURE.test(detail);
-  err.codexTransient = !err.codexSetupFailure && CODEX_TRANSIENT_FAILURE.test(detail);
+  err.codexTransient = !err.codexSetupFailure && !err.quotaExhausted && CODEX_TRANSIENT_FAILURE.test(detail);
   return err;
 }
 

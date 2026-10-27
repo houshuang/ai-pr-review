@@ -6,7 +6,7 @@ import { looksLikeBranchName } from "../src/resolve-branch.js";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCodex } from "../src/ai-provider.js";
+import { runAgent, runCodex } from "../src/ai-provider.js";
 import { getTaskConfig } from "../src/models.js";
 
 test("Codex --json events yield summed usage and the terminating error", () => {
@@ -276,6 +276,52 @@ test("a rate-limited run that already streamed text is not retried", async () =>
     writeFileSync(attempts, "");
     await assert.rejects(fake.run({ env: { PATH: fake.dir, ATTEMPTS: attempts }, retryDelaysMs: [1, 1], onText: () => {} }), /429/);
     assert.equal(readFileSync(attempts, "utf8"), "1");
+  } finally { fake.cleanup(); }
+});
+
+// A claude stand-in next to the fake codex, so runAgent can fall back to it.
+function addFakeClaude(dir, body = `process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "from claude" }) + "\\n");`) {
+  writeFileSync(join(dir, "claude"), `#!/usr/bin/env node\nimport fs from 'node:fs';\nprocess.stdin.resume();\nprocess.stdin.on('end', () => {\nfs.appendFileSync(${JSON.stringify(join(dir, "claude-calls"))}, 'x');\n${body}\n});\n`);
+  chmodSync(join(dir, "claude"), 0o755);
+}
+
+test("an exhausted Codex plan is not retried and the task falls back to Claude Code", async () => {
+  const fake = fakeCodex(`fs.appendFileSync(process.env.ATTEMPTS, "x");
+    ${send({ type: "turn.failed", error: { message: "429 Too Many Requests: You've hit your usage limit. Upgrade to Pro or try again later." } })}
+    process.exitCode = 1;`);
+  const attempts = join(fake.dir, "attempts");
+  const env = { PATH: fake.dir, ATTEMPTS: attempts };
+  try {
+    writeFileSync(attempts, "");
+    await assert.rejects(fake.run({ env, retryDelaysMs: [1, 1] }), err => err.quotaExhausted && !err.codexTransient);
+    assert.equal(readFileSync(attempts, "utf8"), "x");
+
+    addFakeClaude(fake.dir);
+    const fallbacks = [];
+    const text = await runAgent({ provider: "codex", userPrompt: "x", cwd: fake.dir, env, retryDelaysMs: [1, 1], onFallback: f => fallbacks.push(`${f.from}->${f.to}`) });
+    assert.equal(text, "from claude");
+    assert.deepEqual(fallbacks, ["codex->claude"]);
+    assert.equal(readFileSync(join(fake.dir, "claude-calls"), "utf8"), "x");
+  } finally { fake.cleanup(); }
+});
+
+test("fallback is skipped after streamed text or when disabled, and a double failure reports both", async () => {
+  const fake = fakeCodex(`${send({ type: "item.completed", item: { id: "m", type: "agent_message", text: "partial" } })}
+    ${send({ type: "turn.failed", error: { message: "server exploded" } })}
+    process.exitCode = 1;`);
+  addFakeClaude(fake.dir, `process.stdout.write(JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "Credit balance is too low" }) + "\\n");`);
+  const env = { PATH: fake.dir };
+  const claudeCalls = () => { try { return readFileSync(join(fake.dir, "claude-calls"), "utf8").length; } catch { return 0; } };
+  try {
+    await assert.rejects(runAgent({ provider: "codex", userPrompt: "x", cwd: fake.dir, env, onText: () => {}, onFallback: () => {} }), /server exploded/);
+    assert.equal(claudeCalls(), 0);
+    await assert.rejects(runAgent({ provider: "codex", userPrompt: "x", cwd: fake.dir, env: { ...env, REVIEW_AI_FALLBACK: "off" } }), /server exploded/);
+    assert.equal(claudeCalls(), 0);
+    await assert.rejects(runAgent({ provider: "codex", userPrompt: "x", cwd: fake.dir, env, onFallback: () => {} }), err => {
+      assert.match(err.message, /server exploded; Claude Code fallback also failed: .*Credit balance is too low/);
+      return true;
+    });
+    assert.equal(claudeCalls(), 1);
   } finally { fake.cleanup(); }
 });
 

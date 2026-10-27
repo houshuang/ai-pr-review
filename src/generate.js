@@ -33,7 +33,8 @@ import { researchRepository } from "./repository-research.js";
 import { TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
 import { citationProblems, gitRevisionReader } from "./citation-check.js";
-import { formatCodexUsage, resolveAIProvider, runAgent } from "./ai-provider.js";
+import { AGENT_LABEL, formatCodexUsage, resolveAIProvider, runAgent } from "./ai-provider.js";
+import { hasCli } from "./provider-config.js";
 import { looksLikeBranchName, resolveBranchToPR } from "./resolve-branch.js";
 import { Agent as UndiciAgent } from "undici";
 
@@ -79,11 +80,27 @@ function log(level, ...args) {
 
 function runAgentWithProgress(options) {
   const labels = { generation: "Writing walkthrough", patch: "Updating walkthrough", repair: "Repairing walkthrough" };
-  const name = AI_PROVIDER === "codex" ? "Codex" : "Claude Code";
+  const name = AGENT_LABEL[options.provider || AI_PROVIDER];
   return withTaskProgress(labels[options.task] || `${name} task`, onActivity => runAgent({
-    ...options, provider: AI_PROVIDER, onActivity,
+    provider: AI_PROVIDER, ...options, onActivity,
     onRetry: ({ attempt, delayMs, error }) => log("WARN", `${name} was rate limited (${error.message}); retry ${attempt} in ${Math.round(delayMs / 1000)}s.`),
+    onFallback: ({ from, to, error }) => log("WARN", `${AGENT_LABEL[from]} failed (${error.message}); running the task with ${AGENT_LABEL[to]} instead.`),
   }), { report: message => log("INFO", message) });
+}
+
+// The Claude provider calls the API directly, so the fallback that runAgent
+// gives the CLI runners happens here: a failed request reruns through Codex.
+async function withCodexFallback(apiCall, agentOptions) {
+  try {
+    return await apiCall();
+  } catch (err) {
+    if (process.env.REVIEW_AI_FALLBACK === "off" || !hasCli("codex")) throw err;
+    log("WARN", `Claude API failed (${err.message}); running the task with Codex instead.`);
+    let usage = null;
+    const text = await runAgentWithProgress({ ...agentOptions, provider: "codex", fallback: false, cwd: tmpdir(), onUsage: (u) => { usage = u; } });
+    log("INFO", `Codex fallback response: ${text.length} characters, ${formatCodexUsage(usage)}`);
+    return text;
+  }
 }
 
 // --- JSON parse / repair / dump for AI responses ---
@@ -184,15 +201,17 @@ async function repairJSONWithAI(text, client) {
         onUsage: (usage) => log("INFO", `Repair response: ${formatCodexUsage(usage)}`),
       });
     } else {
-      const stream = client.messages.stream({
-        model: getTaskConfig("claude", "repair").model,
-        max_tokens: 64000,
-        system: systemPrompt,
-        messages: [{ role: "user", content: text }],
-      });
-      const response = await stream.finalMessage();
-      log("INFO", `Repair response: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-      fixed = extractText(response);
+      fixed = await withCodexFallback(async () => {
+        const stream = client.messages.stream({
+          model: getTaskConfig("claude", "repair").model,
+          max_tokens: 64000,
+          system: systemPrompt,
+          messages: [{ role: "user", content: text }],
+        });
+        const response = await stream.finalMessage();
+        log("INFO", `Repair response: ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+        return extractText(response);
+      }, { systemPrompt, userPrompt: text, task: "repair" });
     }
     for (const candidate of extractJSONCandidates(fixed)) {
       try {
@@ -897,7 +916,7 @@ Generate the walkthrough JSON. Important reminders:
       onUsage: (u) => { usage = u; },
     });
     log("INFO", `Codex response: ${text.length} characters, ${formatCodexUsage(usage)}`);
-  } else {
+  } else text = await withCodexFallback(async () => {
     let response;
     try {
       // Use streaming to prevent TCP read timeouts on large diffs.
@@ -931,8 +950,8 @@ Generate the walkthrough JSON. Important reminders:
       throw err;
     }
     log("INFO", `API response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-    text = extractText(response);
-  }
+    return extractText(response);
+  }, { systemPrompt: SYSTEM_PROMPT, userPrompt, task: "generation", outputSchema: WALKTHROUGH_SCHEMA });
 
   dumpRawResponse(text, "walkthrough");
 
@@ -1224,7 +1243,7 @@ Return ONLY the JSON patch. Include all schema fields, using empty arrays and nu
         onUsage: (u) => { usage = u; },
       });
       log("INFO", `Codex patch response: ${text.length} characters, ${formatCodexUsage(usage)}`);
-    } else {
+    } else text = await withCodexFallback(async () => {
       const stream = client.messages.stream({
         model: getTaskConfig("claude", "patch").model,
         output_config: { effort: getTaskConfig("claude", "patch").effort, format: { type: "json_schema", schema: PATCH_SCHEMA } },
@@ -1240,8 +1259,8 @@ Return ONLY the JSON patch. Include all schema fields, using empty arrays and nu
       });
       const response = await stream.finalMessage();
       log("INFO", `Patch response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-      text = extractText(response);
-    }
+      return extractText(response);
+    }, { systemPrompt, userPrompt, task: "patch", outputSchema: PATCH_SCHEMA });
   } catch (err) {
     log("ERROR", `Incremental AI call failed: ${err.message}`);
     throw err;

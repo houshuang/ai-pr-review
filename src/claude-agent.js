@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { resolve } from "path";
 import { getTaskConfig } from "./models.js";
+import { QUOTA_EXHAUSTED } from "./agent-failure.js";
 
 const CLAUDE_TIMEOUT_MS = 15 * 60 * 1000;
 const CLAUDE_RETRY_DELAYS_MS = [15_000, 45_000, 90_000];
@@ -16,8 +17,9 @@ const READ_TOOLS = "Read,Grep,Glob";
 function claudeFailure(detail, code) {
   const text = String(detail || `Claude Code exited with code ${code}`).trim().slice(0, 400);
   const err = new Error(`Claude Code failed: ${text}${/not logged in|\/login|\b401\b/i.test(text) ? " — run `claude` and log in" : ""}`);
+  err.quotaExhausted = QUOTA_EXHAUSTED.test(text);
   err.codexSetupFailure = CLAUDE_SETUP_FAILURE.test(text);
-  err.codexTransient = !err.codexSetupFailure && CLAUDE_TRANSIENT_FAILURE.test(text);
+  err.codexTransient = !err.codexSetupFailure && !err.quotaExhausted && CLAUDE_TRANSIENT_FAILURE.test(text);
   return err;
 }
 

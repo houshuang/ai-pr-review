@@ -10,11 +10,11 @@ import { writeReviewFile } from "./review-storage.js";
 const src = dirname(fileURLToPath(import.meta.url));
 const requireLogs = (root) => readFileSync(join(root,"logs",readdirSync(join(root,"logs"))[0]),"utf8");
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
-function fixture(t, scenario = "normal", tips = [{ tip: "check code", status: "info", pending: true }], provider = "codex") {
+function fixture(t, scenario = "normal", tips = [{ tip: "check code", status: "info", pending: true }], provider = "codex", extraEnv = {}) {
   const root = mkdtempSync(join(tmpdir(), "review-resolver-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "src"));
-  for (const name of ["resolve-info-tips.js", "review-storage.js", "repo-snapshot.js", "ai-provider.js", "claude-agent.js", "models.js", "provider-config.js"]) copyFileSync(join(src, name), join(root, "src", name));
+  for (const name of ["resolve-info-tips.js", "review-storage.js", "repo-snapshot.js", "ai-provider.js", "claude-agent.js", "agent-failure.js", "models.js", "provider-config.js"]) copyFileSync(join(src, name), join(root, "src", name));
   writeFileSync(join(root, "package.json"), '{"type":"module"}');
   mkdirSync(join(root, "public", "walkthroughs"), { recursive: true });
   mkdirSync(join(root, "bin"));
@@ -59,7 +59,7 @@ let input = ''; process.stdin.on('data', data => input += data); process.stdin.o
   const content = { meta, diff: "reviewed diff", walkthrough: { review_tips: tips } };
   const jsonPath = join(root, "public", "walkthroughs", "review.json");
   writeFileSync(jsonPath, JSON.stringify(content));
-  const env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, RECORD: record, SCENARIO: scenario, REVIEW_AI_PROVIDER: provider, ANTHROPIC_API_KEY: "", REVIEW_TIP_TIMEOUT_MS: scenario === "timeout" ? "1000" : "10000" };
+  const env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, RECORD: record, SCENARIO: scenario, REVIEW_AI_PROVIDER: provider, ANTHROPIC_API_KEY: "", REVIEW_TIP_TIMEOUT_MS: scenario === "timeout" ? "1000" : "10000", ...extraEnv };
   const run = () => {
     const child = spawn(process.execPath, [join(root, "src", "resolve-info-tips.js"), "review", repo], { cwd: root, env, stdio: "pipe" });
     let stderr = "";
@@ -112,7 +112,7 @@ test("every legacy diff verdict is investigated, including verified and concern"
 });
 
 test("setup failure is blocked rather than resolved, clears pending and retries on the next run", async (t) => {
-  const f = fixture(t, "failure");
+  const f = fixture(t, "failure", undefined, "codex", { REVIEW_AI_FALLBACK: "off" });
   await f.run();
   let tip = f.read().walkthrough.review_tips[0];
   assert.equal(tip.status, "info");
@@ -124,6 +124,15 @@ test("setup failure is blocked rather than resolved, clears pending and retries 
   assert.equal(existsSync(f.calls()[0].cwd), false);
   await f.run();
   assert.equal(f.calls().length, 2);
+});
+
+test("a Codex failure falls back to Claude Code for the investigation", async (t) => {
+  const f = fixture(t, "failure");
+  await f.run();
+  const tip = f.read().walkthrough.review_tips[0];
+  assert.equal(tip.investigationState, "complete", tip.finding + "\n" + requireLogs(f.root));
+  assert.equal(tip.status, "concern");
+  assert.deepEqual(f.calls().map((call) => call.tools ? "claude" : "codex"), ["codex", "claude"]);
 });
 
 test("duplicate resolver processes perform only one full-code investigation", async (t) => {

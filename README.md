@@ -225,6 +225,8 @@ REVIEW_AI_PROVIDER=codex ./bin/review <PR url>   # override it from the environm
 
 A flag beats `REVIEW_AI_PROVIDER`, which beats the saved default. When no default is saved and there is no terminal to ask (CI, scripts, `node src/generate.js`), the tool uses Claude if an Anthropic key is available, otherwise Codex if the `codex` CLI is on `PATH`, and otherwise stops with an error. Nothing is saved in that case.
 
+If a task fails with the chosen provider, it runs once with the other one, provided its CLI is installed: Claude API calls fall back to the `codex` CLI and Codex runs fall back to `claude -p`. There is no fallback once an answer has started streaming or after a cancellation. Rate limits and overload (429, 503, 529) are retried after 15s, 45s and 90s before falling back; an exhausted plan, quota or credit balance is not retried. Set `REVIEW_AI_FALLBACK=off` to fail instead.
+
 A walkthrough records the provider that generated it: its chat uses the same provider, and regenerating with a different provider starts from scratch instead of patching the cached walkthrough.
 
 ## Configuration
@@ -233,6 +235,7 @@ A walkthrough records the provider that generated it: its chat uses the same pro
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key, needed for Claude | — |
 | `REVIEW_AI_PROVIDER` | `claude` or `codex`; overrides the saved default | saved default |
+| `REVIEW_AI_FALLBACK` | `off` disables running a failed task with the other provider | on |
 | `REVIEW_CODEX_MODEL` | Model override for Codex tasks | `gpt-6.1-sol` |
 | `REVIEW_CODEX_EFFORT` | Effort override for Codex tasks | task default below |
 | `REVIEW_CLAUDE_MODEL` | Model override for Claude tasks, including repair | task default below |

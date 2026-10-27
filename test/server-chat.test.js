@@ -97,6 +97,23 @@ test('Claude chat selects chat model settings and forwards cancellation signal',
   });
 });
 
+test('a Claude API chat that fails before answering is answered by Codex', async () => {
+  let args;
+  const handler = createChatHandler({ root: '/review', resolveAIProvider: provider => provider,
+    loadContext: async () => ({ provider: 'claude', systemPrompt: 'actual code' }),
+    taskConfig: () => ({ model: 'chat-model', effort: 'low' }),
+    anthropicClient: () => ({ messages: { stream: () => (async function* () { throw new Error('credit balance is too low'); })() } }),
+    runAgent: async options => { args = options; return 'from codex'; },
+  });
+  await withServer(handler, async url => {
+    const response = await fetch(url, post({ message: 'Explain' }));
+    assert.equal(await response.text(), 'from codex');
+    assert.equal(args.provider, 'codex');
+    assert.equal(args.fallback, false);
+    assert.equal(args.systemPrompt, 'actual code');
+  });
+});
+
 test('timed out Codex chat aborts the runner and returns a failure before any text', async () => {
   const handler = createChatHandler({ root: '/review', timeout: 20, resolveAIProvider: provider => provider,
     loadContext: async () => ({ provider: 'codex', systemPrompt: 'code' }),
