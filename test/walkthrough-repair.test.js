@@ -95,7 +95,7 @@ test("citation problems are repaired, and any that survive lose their line link 
   const cited = (text) => ({ ...walkthrough(1), overview: text });
   const checkCitations = async (value) =>
     value.overview.includes("value.js:99")
-      ? [{ check: "citation", cited: "value.js:99", message: "overview: citation `value.js:99` is past the end of value.js" }]
+      ? [{ check: "citation", where: "overview", cited: "value.js:99", message: "overview: citation `value.js:99` is past the end of value.js" }]
       : [];
   let prompts = [];
   const repaired = await validateOrRepairWalkthrough(cited("See value.js:99."), diff, {
@@ -114,4 +114,34 @@ test("citation problems are repaired, and any that survive lose their line link 
     runner: async () => JSON.stringify(cited("See value.js:99.")),
   });
   assert.equal(kept.overview, "See value.js.");
+});
+
+test("repair keeps prose and diagrams it was not asked to change, and undoes double escaping", async () => {
+  const original = walkthrough(100);
+  original.title = "Turn the “say you can't search” line into a guarantee";
+  original.overview = "**What went wrong.** A user asked.\n\n**Why.** Pins `[\"getTypes\"]`.";
+  original.architecture_diagram = 'flowchart TD\n    MAP["skillRequiredTools.ts<br/>graph-query -> runSearch"]';
+  original.sections[0].narrative = "See `value.js:1`.\n\nThen \"quoted\".";
+  const escaped = (text) => JSON.stringify(text).slice(1, -1);
+  const runner = async () => {
+    const copy = structuredClone(original);
+    copy.title = 'Turn the \\"say you can\'t search\\" line into a guarantee';
+    copy.overview = escaped(original.overview);
+    copy.architecture_diagram = 'flowchart TD\n    MAP["\\"skillRequiredTools.ts<br/>graph-query -> runSearch\\""]';
+    copy.sections[0].narrative = escaped("See `src/value.js:1`.\n\nThen \"quoted\".");
+    copy.sections[0].hunks[0].startLine = 1;
+    copy.sections[0].hunks[0].endLine = 1;
+    return JSON.stringify(copy);
+  };
+  const repaired = await validateOrRepairWalkthrough(original, diff, {
+    runner,
+    checkCitations: async (current) => current.sections[0].narrative.includes("`value.js:1`")
+      ? [{ check: "citation", where: "section value narrative", cited: "value.js:1", message: "section value narrative: citation `value.js:1` matches 2 files" }]
+      : [],
+  });
+  assert.equal(repaired.title, original.title);
+  assert.equal(repaired.overview, original.overview);
+  assert.equal(repaired.architecture_diagram, original.architecture_diagram);
+  assert.equal(repaired.sections[0].narrative, "See `src/value.js:1`.\n\nThen \"quoted\".");
+  assert.equal(repaired.sections[0].hunks[0].startLine, 1);
 });
