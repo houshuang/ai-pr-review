@@ -99,7 +99,7 @@ export async function repositoryContext(meta, diff, cacheDir, { includeBase = tr
   }
 }
 
-export async function readSource(context, { path, line = 1, revision = "head", full = false }) {
+export async function readSource(context, { path, line = 1, revision = "head", full = false, exact = false }) {
   if (
     typeof path !== "string" ||
     path.length > 1000 ||
@@ -113,7 +113,7 @@ export async function readSource(context, { path, line = 1, revision = "head", f
     throw new HttpError(400, "Invalid source revision or line");
   const snapshot = context[revision];
   if (!snapshot) throw new HttpError(404, "Base revision is unavailable");
-  if (!path.includes('/')) {
+  if (!exact && !path.includes('/')) {
     const matches = (await runCommand('git', ['ls-files', '--', path, `**/${path}`], { cwd: snapshot.path })).trim().split('\n').filter(candidate => candidate && candidate.split('/').pop() === path);
     if (matches.length > 1) throw new HttpError(404, 'Ambiguous filename; use a full repository-relative path');
     if (matches.length === 1) path = matches[0];
@@ -194,6 +194,7 @@ Return JSON with title, markdown and references (path, line, revision head/base)
       throw new Error(
         `Invalid explanation response (title: ${typeof result.title}, narrative: ${typeof result.markdown}/${result.markdown?.length}, references: ${Array.isArray(result.references) ? result.references.length : typeof result.references})`,
       );
+    const changedPaths = parse(review.diff).map((file) => (file.isDeleted ? file.oldName : file.newName));
     const references = [];
     for (const reference of result.references) {
       if (
@@ -204,8 +205,21 @@ Return JSON with title, markdown and references (path, line, revision head/base)
       ) {
         throw new Error("Invalid explanation reference");
       }
-      await readSource(context, reference);
-      references.push({ path: reference.path, line: reference.line, revision: reference.revision });
+      const changed = reference.path.includes("/")
+        ? []
+        : changedPaths.filter((candidate) => candidate.split("/").pop() === reference.path);
+      let source;
+      try {
+        source = await readSource(
+          context,
+          changed.length === 1 ? { ...reference, path: changed[0], exact: true } : reference,
+        );
+      } catch (error) {
+        // A real but underspecified filename should not discard a whole research pass; fabricated paths still fail.
+        if (/^Ambiguous filename/.test(error.message)) continue;
+        throw error;
+      }
+      references.push({ path: source.path, line: reference.line, revision: reference.revision });
     }
     return {
       ...result,

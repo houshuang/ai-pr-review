@@ -171,6 +171,28 @@ test("short filenames resolve only when unambiguous in the recorded repository",
   } finally { await context.cleanup(); }
 });
 
+test("explanations resolve short citations through the diff and drop ones that stay ambiguous", async t => {
+  const { root, review, git } = repositoryFixture(t);
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(join(root, 'nested'));
+  writeFileSync(join(root, 'nested', 'resolver.js'), 'unrelated resolver\n');
+  writeFileSync(join(root, 'nested', 'caller.js'), 'another caller\n');
+  git('add', 'nested'); git('commit', '-m', 'duplicate filenames');
+  review.meta.headSha = git('rev-parse', 'HEAD');
+  const result = await explainRepository(review, { kind: 'pr' }, {
+    cacheDir: join(root, 'cache'),
+    runner: async () => JSON.stringify({
+      title: 'Short citations',
+      markdown: 'resolver.js:1 is changed; caller.js:1 is ambiguous.',
+      references: [
+        { path: 'resolver.js', line: 1, revision: 'head' },
+        { path: 'caller.js', line: 1, revision: 'head' },
+      ],
+    }),
+  });
+  assert.deepEqual(result.references, [{ path: 'resolver.js', line: 1, revision: 'head' }]);
+});
+
 test("scope comes from stored review and cannot target an unrelated file or section", () => {
   const review = {
     walkthrough: { title: "Change", sections: [{ id: "a", title: "A", hunks: [] }] },
