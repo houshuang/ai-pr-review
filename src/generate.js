@@ -30,7 +30,8 @@ import { fetchLocalDiff, readDiffFile } from "./local-input.js";
 import { withTaskProgress } from "./task-progress.js";
 import { validateOrRepairWalkthrough } from "./walkthrough-repair.js";
 import { researchRepository } from "./repository-research.js";
-import { TEACHING_INSTRUCTIONS } from "./repository-explanation.js";
+import { TEACHING_INSTRUCTIONS, repositoryContext } from "./repository-explanation.js";
+import { withCodeTools } from "./walkthrough-tools.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
 import { citationProblems, gitRevisionReader } from "./citation-check.js";
 import { AGENT_LABEL, formatCodexUsage, resolveAIProvider, runAgent } from "./ai-provider.js";
@@ -97,10 +98,52 @@ async function withCodexFallback(apiCall, agentOptions) {
     if (process.env.REVIEW_AI_FALLBACK === "off" || !hasCli("codex")) throw err;
     log("WARN", `Claude API failed (${err.message}); running the task with Codex instead.`);
     let usage = null;
-    const text = await runAgentWithProgress({ ...agentOptions, provider: "codex", fallback: false, cwd: tmpdir(), onUsage: (u) => { usage = u; } });
+    const text = await runAgentWithProgress({ cwd: tmpdir(), ...agentOptions, provider: "codex", fallback: false, onUsage: (u) => { usage = u; } });
     log("INFO", `Codex fallback response: ${text.length} characters, ${formatCodexUsage(usage)}`);
     return text;
   }
+}
+
+// Writers look up unchanged code at the reviewed revision; without a snapshot they work from the diff and research alone.
+async function codeLookupContext(prData) {
+  try {
+    return await repositoryContext(prData, prData.diff, resolve(__dirname, "..", ".cache", "repos"));
+  } catch (error) {
+    log("INFO", `Code lookup unavailable: ${error.message}`);
+    return null;
+  }
+}
+
+function codeLookupPrompt(context, provider) {
+  if (!context) return "**Repository access:** unavailable; unchanged code is known only through the research.";
+  const where = provider === "codex"
+    ? ` Head worktree: ${context.head.path}.${context.base ? ` Base worktree: ${context.base.path}.` : ""}`
+    : ` Use the read_source and search_code tools${context.base ? " (revision head or base)" : ""}.`;
+  return `**Repository access:** read-only lookup of the whole repository at the reviewed head${context.base ? " and the diff base" : ""} (${context.head.provenance}).${where} Check unchanged callers, types and tests yourself rather than relying on the research alone; cite what you read.`;
+}
+
+function codeLookupAgentOptions(context) {
+  return context ? { cwd: context.head.path, readableDirs: [context.base?.path], allowShell: true } : {};
+}
+
+async function streamMessage(client, params, label, every) {
+  const stream = client.messages.stream(params);
+  let tokenCount = 0;
+  stream.on("text", () => {
+    tokenCount++;
+    if (tokenCount === 1) log("INFO", "First token received, streaming...");
+    if (tokenCount % every === 0) log("INFO", `  ...${tokenCount} tokens received`);
+  });
+  const response = await stream.finalMessage();
+  log("INFO", `${label}: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+  return response;
+}
+
+async function sendWithCodeLookup(client, params, context, label, every) {
+  if (!context) return streamMessage(client, params, label, every);
+  const { response, rounds, usage } = await withCodeTools((request) => streamMessage(client, request, label, every), params, context, { log: (message) => log("INFO", message) });
+  if (rounds) log("INFO", `${label} after ${rounds} code lookup round${rounds === 1 ? "" : "s"}: ${usage.input} uncached input / ${usage.cacheRead} cached / ${usage.output} output tokens`);
+  return response;
 }
 
 // --- JSON parse / repair / dump for AI responses ---
@@ -877,7 +920,10 @@ ${JSON.stringify(previousWalkthrough)}
 `;
   }
 
+  const lookup = await codeLookupContext(prData);
   const userPrompt = `${previousWalkthrough ? "Update" : "Create"} a walkthrough for this PR.
+
+${codeLookupPrompt(lookup, AI_PROVIDER)}
 
 **Repository research at the reviewed revision (reconcile the passes into one coherent explanation; investigate apparent contradictions in the supplied code, never silently select a convenient claim):**
 ${prData.research?.markdown || "No repository research available"}
@@ -905,53 +951,50 @@ Generate the walkthrough JSON. Important reminders:
   log("INFO", `Diff size: ${(focusedDiff.length / 1024).toFixed(1)}KB${largePRSummary ? ` (focused from ${(prData.diff.length / 1024).toFixed(1)}KB)` : ""}`);
 
   let text;
-  if (AI_PROVIDER === "codex") {
-    let usage = null;
-    text = await runAgentWithProgress({
-      systemPrompt: SYSTEM_PROMPT,
-      userPrompt,
-      cwd: tmpdir(),
-      task: "generation",
-      outputSchema: WALKTHROUGH_SCHEMA,
-      onUsage: (u) => { usage = u; },
-    });
-    log("INFO", `Codex response: ${text.length} characters, ${formatCodexUsage(usage)}`);
-  } else text = await withCodexFallback(async () => {
-    let response;
-    try {
-      // Use streaming to prevent TCP read timeouts on large diffs.
-      const stream = client.messages.stream({
-        model: getTaskConfig("claude", "generation").model,
-        output_config: { effort: getTaskConfig("claude", "generation").effort, format: { type: "json_schema", schema: WALKTHROUGH_SCHEMA } },
-        max_tokens: 64000,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userPrompt }],
+  try {
+    if (AI_PROVIDER === "codex") {
+      let usage = null;
+      text = await runAgentWithProgress({
+        systemPrompt: SYSTEM_PROMPT,
+        userPrompt,
+        cwd: tmpdir(),
+        ...codeLookupAgentOptions(lookup),
+        task: "generation",
+        outputSchema: WALKTHROUGH_SCHEMA,
+        onUsage: (u) => { usage = u; },
       });
-      let tokenCount = 0;
-      stream.on("text", () => {
-        tokenCount++;
-        if (tokenCount === 1) log("INFO", "First token received, streaming...");
-        if (tokenCount % 2000 === 0) log("INFO", `  ...${tokenCount} tokens received`);
-      });
-      response = await stream.finalMessage();
-    } catch (err) {
-      if (err instanceof APIConnectionTimeoutError) {
-        log("ERROR", "API request timed out after 15 minutes (including retries)");
-      } else if (err instanceof APIConnectionError) {
-        log("ERROR", `API connection failed: ${err.message}${err.cause ? ` (cause: ${err.cause})` : ""}`);
-      } else if (err instanceof RateLimitError) {
-        const retryAfter = err.headers?.["retry-after"];
-        log("ERROR", `Rate limited (429)${retryAfter ? ` — retry after ${retryAfter}s` : ""}`);
-      } else if (err instanceof InternalServerError) {
-        log("ERROR", `API server error (${err.status}): ${err.message}`);
-      } else if (err.status) {
-        log("ERROR", `API error (${err.status}): ${err.message}`);
+      log("INFO", `Codex response: ${text.length} characters, ${formatCodexUsage(usage)}`);
+    } else text = await withCodexFallback(async () => {
+      let response;
+      try {
+        // Use streaming to prevent TCP read timeouts on large diffs.
+        response = await sendWithCodeLookup(client, {
+          model: getTaskConfig("claude", "generation").model,
+          output_config: { effort: getTaskConfig("claude", "generation").effort, format: { type: "json_schema", schema: WALKTHROUGH_SCHEMA } },
+          max_tokens: 64000,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: userPrompt }],
+        }, lookup, "API response", 2000);
+      } catch (err) {
+        if (err instanceof APIConnectionTimeoutError) {
+          log("ERROR", "API request timed out after 15 minutes (including retries)");
+        } else if (err instanceof APIConnectionError) {
+          log("ERROR", `API connection failed: ${err.message}${err.cause ? ` (cause: ${err.cause})` : ""}`);
+        } else if (err instanceof RateLimitError) {
+          const retryAfter = err.headers?.["retry-after"];
+          log("ERROR", `Rate limited (429)${retryAfter ? ` — retry after ${retryAfter}s` : ""}`);
+        } else if (err instanceof InternalServerError) {
+          log("ERROR", `API server error (${err.status}): ${err.message}`);
+        } else if (err.status) {
+          log("ERROR", `API error (${err.status}): ${err.message}`);
+        }
+        throw err;
       }
-      throw err;
-    }
-    log("INFO", `API response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
-    return extractText(response);
-  }, { systemPrompt: SYSTEM_PROMPT, userPrompt, task: "generation", outputSchema: WALKTHROUGH_SCHEMA });
+      return extractText(response);
+    }, { systemPrompt: SYSTEM_PROMPT, userPrompt, task: "generation", outputSchema: WALKTHROUGH_SCHEMA, ...codeLookupAgentOptions(lookup) });
+  } finally {
+    await lookup?.cleanup();
+  }
 
   dumpRawResponse(text, "walkthrough");
 
@@ -1205,7 +1248,10 @@ Output ONLY a JSON patch with the minimum changes. Do not return the full walkth
 
 If the delta is trivial (formatting, comments only) you may return an essentially empty patch (no section changes).`;
 
+  const lookup = await codeLookupContext(prData);
   const userPrompt = `Update the walkthrough for this PR.
+
+${codeLookupPrompt(lookup, AI_PROVIDER)}
 
 **Repository research at the reviewed revision (reconcile the passes into one coherent explanation; investigate apparent contradictions in the supplied code, never silently select a convenient claim):**
 ${prData.research?.markdown || "No repository research available"}
@@ -1238,32 +1284,27 @@ Return ONLY the JSON patch. Include all schema fields, using empty arrays and nu
         systemPrompt,
         userPrompt,
         cwd: tmpdir(),
+        ...codeLookupAgentOptions(lookup),
         task: "patch",
         outputSchema: PATCH_SCHEMA,
         onUsage: (u) => { usage = u; },
       });
       log("INFO", `Codex patch response: ${text.length} characters, ${formatCodexUsage(usage)}`);
     } else text = await withCodexFallback(async () => {
-      const stream = client.messages.stream({
+      const response = await sendWithCodeLookup(client, {
         model: getTaskConfig("claude", "patch").model,
         output_config: { effort: getTaskConfig("claude", "patch").effort, format: { type: "json_schema", schema: PATCH_SCHEMA } },
         max_tokens: 32000,
         system: systemPrompt,
         messages: [{ role: "user", content: userPrompt }],
-      });
-      let tokenCount = 0;
-      stream.on("text", () => {
-        tokenCount++;
-        if (tokenCount === 1) log("INFO", "First token received, streaming...");
-        if (tokenCount % 1000 === 0) log("INFO", `  ...${tokenCount} tokens received`);
-      });
-      const response = await stream.finalMessage();
-      log("INFO", `Patch response: ${response.stop_reason}, ${response.usage?.input_tokens} input / ${response.usage?.output_tokens} output tokens`);
+      }, lookup, "Patch response", 1000);
       return extractText(response);
-    }, { systemPrompt, userPrompt, task: "patch", outputSchema: PATCH_SCHEMA });
+    }, { systemPrompt, userPrompt, task: "patch", outputSchema: PATCH_SCHEMA, ...codeLookupAgentOptions(lookup) });
   } catch (err) {
     log("ERROR", `Incremental AI call failed: ${err.message}`);
     throw err;
+  } finally {
+    await lookup?.cleanup();
   }
 
   // Parse patch JSON with the same resilience as the full path

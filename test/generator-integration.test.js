@@ -121,6 +121,10 @@ test("whole generator resumes blocked cached tips automatically and retains comp
   assert.match(firstRun.stdout, /Repository research completed/);
   assert.match(firstRun.stdout, /Writing walkthrough started/);
   assert.match(firstRun.stdout, /Writing walkthrough completed/);
+  const writer = f.calls().find(call => call.kind === "generation");
+  assert.match(writer.cwd, /\.cache\/repos\//);
+  assert.equal(writer.args.includes("shell_tool"), false);
+  assert(writer.prompt.includes(`Repository access:** read-only lookup`) && writer.prompt.includes(`Head worktree: ${writer.cwd}`));
   const cachePath = join(f.tool, "public", "walkthroughs", readdirSync(join(f.tool, "public", "walkthroughs"))[0]);
   const cached = f.output();
   cached.walkthrough.review_tips = [{tip:"Check the exported constant",status:"info",resolved:false,investigationState:"blocked",finding:"Prior unavailable runtime"}];

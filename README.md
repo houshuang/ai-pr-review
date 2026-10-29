@@ -273,7 +273,7 @@ For Claude, copy `.env.example` to `.env` and add your key, or set it as an envi
 
 ### Codex execution
 
-The runner sets an explicit model/effort, uses `--ephemeral`, ignores user config with `--ignore-user-config`, disables hooks/plugins/apps and skips host skill discovery. Review data and source code are treated as untrusted context. Project instruction loading is disabled for review tasks. Generation, patching, chat and repair disable shell tools; repository investigations use a workspace-write sandbox so Codex can install dependencies and run tests in the disposable worktree, with network access for dependency setup. The investigation instructions require evidence gathering and forbid source fixes or remote writes. Authentication still comes from your existing Codex login. Managed or administrator configuration may still apply; these flags are not a guarantee of isolation from all host policy.
+The runner sets an explicit model/effort, uses `--ephemeral`, ignores user config with `--ignore-user-config`, disables hooks/plugins/apps and skips host skill discovery. Review data and source code are treated as untrusted context. Project instruction loading is disabled for review tasks. Repair disables shell tools; generation, patching and chat keep the read-only shell to look up code in the pinned snapshot when one exists; repository investigations use a workspace-write sandbox so Codex can install dependencies and run tests in the disposable worktree, with network access for dependency setup. The investigation instructions require evidence gathering and forbid source fixes or remote writes. Authentication still comes from your existing Codex login. Managed or administrator configuration may still apply; these flags are not a guarantee of isolation from all host policy.
 
 Use a current CLI supporting `--ignore-user-config`, `--output-schema`, and the `hooks`, `plugins`, `apps`, `skip_host_skill_discovery`, `shell_tool` and `shell_snapshot` feature flags. An unsupported flag fails with an upgrade hint instead of silently falling back to inherited configuration.
 
@@ -352,6 +352,11 @@ and limitations. Mechanical propagation remains brief. Research is saved with th
 walkthrough and reused on an exact cache hit. A changed revision performs fresh
 research, including before incremental patch generation. Patch updates may revise
 sections affected indirectly through changed dependencies.
+
+The writer can also look up code itself at the same pinned head and base, so it can
+check a research claim or follow a caller the research did not cover. Under Codex it
+runs in the head snapshot with a read-only shell; through the Claude API it gets
+`read_source` and `search_code` tools (at most 30 lookup rounds, prompt-cached).
 
 Invalid generated file or hunk references get one evidence-grounded repair attempt.
 The repaired result must pass the same validation; a failed repair preserves the
