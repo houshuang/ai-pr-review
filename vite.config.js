@@ -71,6 +71,8 @@ function loadChatApiKey() {
 export default defineConfig({
   root: '.',
   build: { outDir: 'dist' },
+  // Generator checkouts under .cache contain .html files, and Vite full-reloads every open page when one changes.
+  server: { watch: { ignored: ['**/.cache/**', '**/logs/**'] } },
   plugins: [
     preact(), walkthroughsEndpoint(),
     endpointPlugin('explanation-middleware', '/api/explanation', createExplanationHandler({ root: __dirname })),
