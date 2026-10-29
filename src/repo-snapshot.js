@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, realpathSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, existsSync, realpathSync, readdirSync, readFileSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +68,14 @@ export async function createInvestigationWorkspace(meta, invokingPath, cacheDir 
     try { return action(); } finally { await release(); }
   };
   const ownerPath = `${path}.owner`;
+  const removeWorktree = (target) => {
+    try { git(["worktree", "remove", "--force", target], objects); }
+    catch (error) {
+      // An interrupted removal can drop git's registration and leave the directory behind.
+      if (!/is not a working tree/.test(error.stderr?.toString() || "")) throw error;
+      rmSync(target, { recursive: true, force: true });
+    }
+  };
   await locked(() => {
     for (const name of readdirSync(scratchRoot).filter((name) => /^[a-f0-9-]+\.owner$/.test(name))) {
       const marker = resolve(scratchRoot, name);
@@ -77,7 +85,7 @@ export async function createInvestigationWorkspace(meta, invokingPath, cacheDir 
       catch (error) {
         if (error.code !== "ESRCH") continue;
         const abandoned = marker.slice(0, -6);
-        if (existsSync(abandoned)) git(["worktree", "remove", "--force", abandoned], objects);
+        if (existsSync(abandoned)) removeWorktree(abandoned);
         unlinkSync(marker);
       }
     }
@@ -86,7 +94,7 @@ export async function createInvestigationWorkspace(meta, invokingPath, cacheDir 
     catch (error) { unlinkSync(ownerPath); throw error; }
   });
   const cleanup = () => locked(() => {
-    git(["worktree", "remove", "--force", path], objects);
+    removeWorktree(path);
     unlinkSync(ownerPath);
   });
   let provenance = snapshot.provenance;

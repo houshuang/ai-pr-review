@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync, mkdirSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync, mkdirSync, realpathSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -109,5 +109,19 @@ test("a later investigation reclaims only scratch worktrees abandoned by a dead 
   const gitList = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: live.path, encoding: "utf8" });
   assert.equal(gitList.includes(abandoned.path), false);
   assert.equal(gitList.includes(live.path), true);
+  await live.cleanup();
+});
+
+test("a later investigation reclaims an abandoned scratch directory whose worktree registration git already forgot", async (t) => {
+  const { repo, oldSha, cache } = fixture(t);
+  const { createInvestigationWorkspace } = await import("./repo-snapshot.js");
+  const meta = { source: "local", headSha: oldSha };
+  const abandoned = await createInvestigationWorkspace(meta, repo, cache);
+  writeFileSync(`${abandoned.path}.owner`, "2147483647");
+  const gitdir = readFileSync(join(abandoned.path, ".git"), "utf8").replace(/^gitdir: /, "").trim();
+  rmSync(gitdir, { recursive: true, force: true });
+  const live = await createInvestigationWorkspace(meta, repo, cache);
+  assert.equal(existsSync(abandoned.path), false);
+  assert.equal(existsSync(`${abandoned.path}.owner`), false);
   await live.cleanup();
 });
