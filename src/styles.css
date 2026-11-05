@@ -2665,7 +2665,7 @@ html.dark .jump-popup {
   padding: 10px 18px;
   margin: 0 auto 0;
   max-width: 1400px;
-  background: var(--orange-bg);
+  background: linear-gradient(var(--orange-bg), var(--orange-bg)), var(--bg);
   border: 1px solid rgba(199,125,46,0.2);
   border-radius: 0 0 6px 6px;
   animation: fadeUp 0.3s ease both;
@@ -2724,7 +2724,7 @@ html.dark .jump-popup {
 }
 
 html.dark .stale-banner {
-  background: rgba(199,125,46,0.1);
+  background: linear-gradient(rgba(199,125,46,0.1), rgba(199,125,46,0.1)), var(--bg);
   border-color: rgba(199,125,46,0.25);
 }
 

@@ -25,6 +25,27 @@ async function pullRequestFiles(owner, repo, number) {
   return files;
 }
 
+// Remembers the head that was dismissed, so the banner returns only after another push.
+function dismissalKey({ owner, repo, number, headSha }) {
+  return `review-stale-dismissed:${owner}/${repo}#${number}:${headSha}`;
+}
+
+function wasDismissed(meta, currentSha) {
+  try {
+    return localStorage.getItem(dismissalKey(meta)) === currentSha;
+  } catch {
+    return false;
+  }
+}
+
+function rememberDismissal(meta, currentSha) {
+  try {
+    localStorage.setItem(dismissalKey(meta), currentSha);
+  } catch {
+    /* the banner stays dismissed until the next reload */
+  }
+}
+
 function ghApi(endpoint, data = {}) {
   return fetch("/api/gh", {
     method: "POST",
@@ -85,7 +106,7 @@ export function StaleBanner() {
         }
 
         if (!cancelled) {
-          staleState.value = { currentSha, generatedSha, dismissed: false, compare, changedFiles };
+          staleState.value = { currentSha, generatedSha, dismissed: wasDismissed(d.meta, currentSha), compare, changedFiles };
         }
       } catch {
         // ignore network/auth failures
@@ -95,7 +116,8 @@ export function StaleBanner() {
     return () => {
       cancelled = true;
     };
-  }, [d]);
+    // Tips and comments replace `data` while keeping `meta`; only a newly loaded walkthrough has a new one.
+  }, [d?.meta]);
 
   if (!state || state.dismissed) return null;
 
@@ -142,7 +164,10 @@ export function StaleBanner() {
       </div>
       <button
         className="btn btn-sm stale-dismiss"
-        onClick={() => { staleState.value = { ...state, dismissed: true }; }}
+        onClick={() => {
+          rememberDismissal(d.meta, state.currentSha);
+          staleState.value = { ...state, dismissed: true };
+        }}
       >
         Dismiss
       </button>
