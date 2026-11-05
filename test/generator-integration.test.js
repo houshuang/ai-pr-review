@@ -171,19 +171,85 @@ test("whole generator publishes validated coverage and reuses exact cache withou
   assert.deepEqual(JSON.parse(readFileSync(join(f.tool, "public", "walkthroughs", slugFile))), f.output());
 });
 
-test("whole generator invalidates model, base revision and same-head description changes", async t => {
+test("whole generator invalidates model and same-head description changes", async t => {
   const f = fixture(t);
   succeeded(await f.run());
   const original = f.output().meta.generationId;
   succeeded(await f.run(undefined, { REVIEW_CODEX_GENERATION_MODEL: "gpt-6-astra" }));
   assert.notEqual(f.output().meta.generationId, original);
-  f.update({ metadata: metadata({ baseRefOid: sha("c") }) });
+  f.update({ metadata: metadata({ body: "Changed motivation" }) });
   succeeded(await f.run(undefined, { REVIEW_CODEX_GENERATION_MODEL: "gpt-6-astra" }));
-  assert.equal(f.output().meta.baseSha, sha("c"));
-  f.update({ metadata: metadata({ baseRefOid: sha("c"), body: "Changed motivation" }) });
-  succeeded(await f.run(undefined, { REVIEW_CODEX_GENERATION_MODEL: "gpt-6-astra" }));
-  assert.equal(count(f, "generation"), 4);
+  assert.equal(count(f, "generation"), 3);
   assert.equal(count(f, "patch"), 0);
+});
+
+test("whole generator reuses the review when only the target branch moved", async t => {
+  const f = fixture(t);
+  succeeded(await f.run());
+  const first = f.output();
+  f.update({ metadata: metadata({ baseRefOid: sha("c") }) });
+  const result = await f.run();
+  succeeded(result);
+  assert.match(result.stdout, /Cache hit/);
+  assert.equal(f.output().meta.generationId, first.meta.generationId);
+  assert.equal(count(f, "generation"), 1);
+  assert.doesNotMatch(result.stdout, /Researching algorithms/);
+});
+
+test("whole generator keeps the review and finished checks after a rebase that changes nothing in the PR", async t => {
+  const f = fixture(t);
+  succeeded(await f.run());
+  const path = join(f.tool, "public", "walkthroughs", "example-repo-12.json");
+  const saved = JSON.parse(readFileSync(path, "utf8"));
+  saved.walkthrough.review_tips = [{ tip: "Check the constant", status: "verified", resolved: true, pending: false, investigationState: "complete", finding: "Settled" }];
+  writeFileSync(path, JSON.stringify(saved));
+  f.update({ metadata: metadata({ baseRefOid: sha("c"), headRefOid: sha("d") }), comparison: "diverged" });
+  const result = await f.run();
+  succeeded(result);
+  assert.match(result.stdout, /Empty delta/);
+  const output = f.output();
+  assert.equal(output.meta.headSha, sha("d"));
+  assert.equal(output.walkthrough.review_tips[0].finding, "Settled");
+  assert.equal(count(f, "generation"), 1);
+  assert.doesNotMatch(result.stdout, /Researching algorithms/);
+  assert.equal(count(f, "investigation"), 0);
+});
+
+test("whole generator regenerates when a rebase moved the lines the cached review cites", async t => {
+  const f = fixture(t);
+  succeeded(await f.run());
+  const moved = diff().replace("@@ -1 +1 @@", "@@ -40 +40 @@");
+  f.update({ metadata: metadata({ headRefOid: sha("d") }), comparison: "diverged", diff: moved });
+  const result = await f.run();
+  assert.match(result.stdout, /regenerating with previous walkthrough/);
+  assert.equal(count(f, "generation"), 2);
+});
+
+test("whole generator patches a force-pushed branch and skips research", async t => {
+  const f = fixture(t);
+  succeeded(await f.run());
+  f.update({ metadata: metadata({ baseRefOid: sha("c"), headRefOid: sha("d") }), comparison: "diverged", diff: diff("next") });
+  const result = await f.run();
+  succeeded(result);
+  assert.doesNotMatch(result.stdout, /Researching algorithms/);
+  assert.equal(f.output().walkthrough.sections[0].narrative, "Updated narrative");
+  assert.equal(count(f, "generation"), 1);
+  assert.equal(count(f, "patch"), 1);
+  assert.equal(count(f, "delta"), 0);
+  assert.match(f.calls().find(call => call.kind === "patch").prompt, /\+next/);
+});
+
+test("whole generator researches and regenerates when a force-push drops a file from the PR", async t => {
+  const f = fixture(t);
+  const other = "diff --git a/other.js b/other.js\nindex 1..2 100644\n--- a/other.js\n+++ b/other.js\n@@ -1 +1 @@\n-a\n+b\n";
+  f.update({ diff: diff() + other });
+  succeeded(await f.run());
+  f.update({ metadata: metadata({ headRefOid: sha("d") }), comparison: "diverged", diff: diff() });
+  const result = await f.run();
+  succeeded(result);
+  assert.match(result.stdout, /Researching algorithms/);
+  assert.equal(count(f, "patch"), 0);
+  assert.equal(count(f, "generation"), 2);
 });
 
 test("whole generator regenerates syntactically valid caches with invalid hunk references", async t => {
@@ -221,14 +287,9 @@ test("whole generator applies a valid incremental patch and regenerates when sem
   assert.equal(count(f, "patch"), 2);
 });
 
-test("whole generator regenerates for diverged GitHub history and preserves cache on invalid full output", async t => {
+test("whole generator preserves cache on invalid full output", async t => {
   const f = fixture(t);
   succeeded(await f.run());
-  f.update({ metadata: metadata({ headRefOid: sha("c") }), comparison: "diverged", walkthrough: walkthrough("Rewritten history") });
-  succeeded(await f.run());
-  assert.equal(count(f, "generation"), 2);
-  assert.equal(count(f, "patch"), 0);
-  assert.equal(count(f, "delta"), 0);
   const saved = readFileSync(join(f.tool, "public", "walkthrough-data.json"), "utf8");
   const invalid = walkthrough();
   invalid.sections[0].hunks[0].file = "invented.js";

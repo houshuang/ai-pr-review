@@ -30,6 +30,11 @@ export function changedPatchFiles(walkthroughDiff, currentFiles) {
   return changed;
 }
 
+/** The files whose own change differs between two complete PR diffs. */
+export function changedDiffFiles(previousDiff, currentDiff) {
+  return changedPatchFiles(previousDiff, [...storedPatches(currentDiff)].map(([filename, patch]) => ({ filename, patch })));
+}
+
 /** Per section id, the changed files it shows or cites at the head, each once. */
 export function staleSectionFiles(walkthrough, changedPaths) {
   const changed = new Set(changedPaths);

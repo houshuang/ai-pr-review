@@ -13,6 +13,16 @@ test("cache requires exact content, base, model settings and generation identity
   assert.equal(canReuseCache({meta:{...cached.meta,generationId:null}},data,fingerprint),false);
 });
 
+test("a GitHub target branch moving does not change the reviewed input", () => {
+  const github = { ...data, source:"github", repositoryPath:null, provenance:"github:o/r#1:base:head" };
+  const saved = { meta:{...github,generationId:"generation",inputHash:inputHash(github),configFingerprint:fingerprint} };
+  const moved = { ...github, baseSha:"new-base", provenance:"github:o/r#1:new-base:head" };
+  assert.equal(canReuseCache(saved,moved,fingerprint),true);
+  assert.equal(canReuseCache(saved,{...moved,diff:"changed"},fingerprint),false);
+  assert.equal(canReuseCache(saved,{...moved,headSha:"next"},fingerprint),false);
+  assert.equal(canPatchCache(saved,{...moved,headSha:"next"},fingerprint),true);
+});
+
 test("incremental patch cannot cross repositories, bases or model settings", () => {
   assert.equal(canPatchCache(cached,{...data,headSha:"next"},fingerprint),true);
   assert.equal(canPatchCache(cached,{...data,repositoryPath:"/other"},fingerprint),false);

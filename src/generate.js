@@ -25,6 +25,7 @@ import { sanitizeWalkthroughDiagrams } from "./mermaid-sanitize.js";
 import { getTaskConfig } from "./models.js";
 import { writeReviewFile, acquireFileLock, shouldInvestigateTip } from "./review-storage.js";
 import { WALKTHROUGH_SCHEMA, PATCH_SCHEMA, validateWalkthrough, validatePatch } from "./walkthrough-schema.js";
+import { changedDiffFiles } from "./stale-sections.js";
 import { canReuseCache, canPatchCache, configFingerprint, inputHash, hash } from "./cache-policy.js";
 import { fetchLocalDiff, readDiffFile } from "./local-input.js";
 import { withTaskProgress } from "./task-progress.js";
@@ -1071,22 +1072,30 @@ Generate the walkthrough JSON. Important reminders:
 const INCREMENTAL_DELTA_KB_MAX = 30;
 const INCREMENTAL_AFFECTED_FILES_MAX = 8;
 
-function computeDeltaDiff(prData, oldSha) {
+// After a rebase or amend GitHub cannot diff the two heads, so send the current patch of each file whose own change differs.
+function rewrittenFilesDelta(prData, changed) {
+  const files = parseDiffIntoFiles(prData.diff).filter((file) => changed.includes(file.path));
+  if (files.length < changed.length) return null; // A file left the PR, which a patch of the walkthrough cannot express.
+  return files.map((file) => file.diffText).join("");
+}
+
+function computeDeltaDiff(prData, oldSha, oldDiff) {
   if (!oldSha || !prData.headSha || oldSha === prData.headSha) return null;
   if (![oldSha, prData.headSha].every((sha) => /^[a-f0-9]{40}$/.test(sha))) return null;
   if (prData.source !== "github" && prData.source !== "local") return null;
 
   if (prData.source === "github") {
+    const changed = changedDiffFiles(oldDiff, prData.diff);
+    if (!changed.length) return "";
     try {
       const endpoint = `repos/${prData.owner}/${prData.repo}/compare/${oldSha}...${prData.headSha}`;
       const options = { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024, timeout: 30000 };
       const comparison = JSON.parse(execFileSync("gh", ["api", endpoint], options));
-      if (comparison.status !== "ahead") return null;
-      return execFileSync("gh", ["api", endpoint, "-H", "Accept: application/vnd.github.v3.diff"], options);
+      if (comparison.status === "ahead") return execFileSync("gh", ["api", endpoint, "-H", "Accept: application/vnd.github.v3.diff"], options);
     } catch (e) {
-      log("WARN", `Could not fetch delta diff from GitHub (${e.message.split("\n")[0]}). Falling back to full regen.`);
-      return null;
+      log("WARN", `Could not fetch delta diff from GitHub (${e.message.split("\n")[0]}). Comparing each file's change instead.`);
     }
+    return rewrittenFilesDelta(prData, changed);
   }
 
   // local mode
@@ -1453,9 +1462,9 @@ async function main() {
   const cachedProvider = cached?.meta?.aiProvider || "claude";
   const providerMatches = cachedProvider === AI_PROVIDER;
   let walkthrough;
-  if (!forceRegenerate && canReuseCache(cached, prData, CONFIG_FINGERPRINT)) {
-    prData.research = cached.research;
-  } else {
+  let unchangedPatch = false;
+  // Research costs more than a patch and only a full generation needs it fresh.
+  const generateWithResearch = async (previous) => {
     log("INFO", "Researching algorithms, invariants and unchanged callers in the reviewed repository...");
     try { prData.research = await researchRepository({ meta: prData, diff: prData.diff, walkthrough: {
       title: prData.title, overview: prData.body || "", sections: [], file_map: parseDiffIntoFiles(prData.diff).map(file => ({ path: file.path })),
@@ -1464,9 +1473,14 @@ async function main() {
       log("INFO", `Repository research unavailable: ${error.message}. Generating from the diff with this limitation disclosed.`);
       prData.research = { status: "blocked", markdown: "Repository research unavailable. Explain only what the supplied diff supports; do not claim whole-repository understanding.", error: error.message };
     }
-  }
+    return generateWalkthrough(prData, previous);
+  };
 
   if (!forceRegenerate && canReuseCache(cached, prData, CONFIG_FINGERPRINT)) {
+    prData.research = cached.research;
+    // Keep the recorded revision so a running check still recognises this as the same review.
+    prData.baseSha = cached.meta.baseSha;
+    prData.provenance = cached.meta.provenance;
     // Same SHA — reuse walkthrough, just refresh comments/reviews/git history
     console.log(`\n✓ Cache hit — ${prData.headSha ? `SHA ${prData.headSha.slice(0, 7)}` : "patch content"} unchanged`);
     console.log("  Refreshing comments and reviews...");
@@ -1478,28 +1492,35 @@ async function main() {
     const oldSha = (oldShaFull || "unknown").slice(0, 7);
     const newSha = (newShaFull || "unknown").slice(0, 7);
 
-    const deltaDiff = computeDeltaDiff(prData, oldShaFull);
-    if (deltaDiff !== null && deltaDiff.trim().length === 0) {
+    const deltaDiff = computeDeltaDiff(prData, oldShaFull, cached.diff);
+    const stillFits = () => {
+      try { validateWalkthrough(cached.walkthrough, prData.diff); return true; }
+      catch (error) { log("INFO", `Cached walkthrough no longer fits the diff (${error.message})`); return false; }
+    };
+    if (deltaDiff !== null && deltaDiff.trim().length === 0 && stillFits()) {
       console.log(`\n✓ Empty delta (${oldSha}..${newSha}) — reusing cached walkthrough`);
       walkthrough = cached.walkthrough;
-    } else if (deltaDiff !== null) {
+      prData.research = cached.research;
+      unchangedPatch = true;
+    } else if (deltaDiff !== null && deltaDiff.trim().length > 0) {
       const affectedFiles = parseDiffIntoFiles(deltaDiff).map((f) => f.path);
       const deltaKB = deltaDiff.length / 1024;
       if (deltaKB <= INCREMENTAL_DELTA_KB_MAX && affectedFiles.length <= INCREMENTAL_AFFECTED_FILES_MAX) {
         console.log(`\n↻ Branch updated (${oldSha} → ${newSha}); ${affectedFiles.length} file(s) changed, ${deltaKB.toFixed(1)}KB delta — incremental mode`);
         try {
+          prData.research = cached.research;
           walkthrough = await generateIncrementalWalkthrough(prData, cached.walkthrough, deltaDiff, affectedFiles);
         } catch (err) {
           log("WARN", `Incremental update failed (${err.message}). Falling back to full regen.`);
-          walkthrough = await generateWalkthrough(prData, cached.walkthrough);
+          walkthrough = await generateWithResearch(cached.walkthrough);
         }
       } else {
         console.log(`\n↻ Branch updated (${oldSha} → ${newSha}); delta is ${deltaKB.toFixed(1)}KB / ${affectedFiles.length} files (over threshold) — full regen`);
-        walkthrough = await generateWalkthrough(prData, cached.walkthrough);
+        walkthrough = await generateWithResearch(cached.walkthrough);
       }
     } else {
       console.log(`\n↻ Branch updated (${oldSha} → ${newSha}), regenerating with previous walkthrough as context...`);
-      walkthrough = await generateWalkthrough(prData, cached.walkthrough);
+      walkthrough = await generateWithResearch(cached.walkthrough);
     }
   } else {
     if (cached && forceRegenerate) {
@@ -1507,14 +1528,14 @@ async function main() {
     } else if (cached && !providerMatches) {
       console.log(`\n⟳ AI provider changed (${cachedProvider} → ${AI_PROVIDER}), regenerating from scratch...`);
     }
-    walkthrough = await generateWalkthrough(prData);
+    walkthrough = await generateWithResearch();
   }
 
   validateWalkthrough(walkthrough, prData.diff);
   const reused = !forceRegenerate && canReuseCache(cached, prData, CONFIG_FINGERPRINT);
   const retryTips = reused ? structuredClone((walkthrough.review_tips || []).filter(shouldInvestigateTip)) : [];
   walkthrough.review_tips = (walkthrough.review_tips || []).map((tip) => {
-    if (!reused) return { tip: typeof tip === "string" ? tip : tip.tip, pending: true };
+    if (!reused && !unchangedPatch) return { tip: typeof tip === "string" ? tip : tip.tip, pending: true };
     return shouldInvestigateTip(tip) ? { ...(typeof tip === "string" ? { tip } : tip), pending: true } : tip;
   });
 
