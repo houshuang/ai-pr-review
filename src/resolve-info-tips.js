@@ -102,7 +102,8 @@ verified means the check is addressed or not an issue after inspecting the full 
     log(`Investigation blocked for ${tip.tip.slice(0, 80)}: ${error.message}`);
     return blocked(error.message, workspace?.provenance, provider);
   } finally {
-    if (workspace) await workspace.cleanup();
+    // A finished verdict stands, and the remaining checks still run, if scratch removal fails.
+    if (workspace) await workspace.cleanup().catch((error) => log(`Could not remove investigation worktree ${workspace.path}: ${error.message}`));
   }
 }
 

@@ -69,6 +69,8 @@ export async function createInvestigationWorkspace(meta, invokingPath, cacheDir 
   };
   const ownerPath = `${path}.owner`;
   const removeWorktree = (target) => {
+    // Go's module cache and similar tools leave read-only directories that neither git nor rm can empty.
+    if (existsSync(target)) execFileSync("chmod", ["-R", "u+rwX", target], options);
     try { git(["worktree", "remove", "--force", target], objects); }
     catch (error) {
       // An interrupted removal can drop git's registration and leave the directory behind.
@@ -85,8 +87,13 @@ export async function createInvestigationWorkspace(meta, invokingPath, cacheDir 
       catch (error) {
         if (error.code !== "ESRCH") continue;
         const abandoned = marker.slice(0, -6);
-        if (existsSync(abandoned)) removeWorktree(abandoned);
-        unlinkSync(marker);
+        // Leftovers must never stop this investigation; the marker stays so a later run retries.
+        try {
+          if (existsSync(abandoned)) removeWorktree(abandoned);
+          unlinkSync(marker);
+        } catch (removal) {
+          console.error(`Could not reclaim abandoned investigation ${abandoned}: ${removal.message}`);
+        }
       }
     }
     writeFileSync(ownerPath, String(process.pid), { flag: "wx" });

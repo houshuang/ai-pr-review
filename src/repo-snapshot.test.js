@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync, mkdirSync, realpathSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync, mkdirSync, realpathSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { ensureRepoSnapshot, safeRepoPath } from "./repo-snapshot.js";
 
@@ -117,6 +117,38 @@ test("a later investigation reclaims an abandoned scratch directory whose worktr
   const { createInvestigationWorkspace } = await import("./repo-snapshot.js");
   const meta = { source: "local", headSha: oldSha };
   const abandoned = await createInvestigationWorkspace(meta, repo, cache);
+  writeFileSync(`${abandoned.path}.owner`, "2147483647");
+  const gitdir = readFileSync(join(abandoned.path, ".git"), "utf8").replace(/^gitdir: /, "").trim();
+  rmSync(gitdir, { recursive: true, force: true });
+  const live = await createInvestigationWorkspace(meta, repo, cache);
+  assert.equal(existsSync(abandoned.path), false);
+  assert.equal(existsSync(`${abandoned.path}.owner`), false);
+  await live.cleanup();
+});
+
+const readOnlyModuleCache = (workspace) => {
+  const directory = join(workspace, ".review-test-cache", "go-mod", "example.com", "module@v1");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "module.go"), "package module\n");
+  chmodSync(join(directory, "module.go"), 0o444);
+  for (const path of [directory, dirname(directory)]) chmodSync(path, 0o555);
+};
+
+test("an investigation removes its own worktree when a tool left read-only directories in it", async (t) => {
+  const { repo, oldSha, cache } = fixture(t);
+  const { createInvestigationWorkspace } = await import("./repo-snapshot.js");
+  const workspace = await createInvestigationWorkspace({ source: "local", headSha: oldSha }, repo, cache);
+  readOnlyModuleCache(workspace.path);
+  await workspace.cleanup();
+  assert.equal(existsSync(workspace.path), false);
+});
+
+test("a later investigation reclaims an abandoned scratch directory with read-only directories after git forgot it", async (t) => {
+  const { repo, oldSha, cache } = fixture(t);
+  const { createInvestigationWorkspace } = await import("./repo-snapshot.js");
+  const meta = { source: "local", headSha: oldSha };
+  const abandoned = await createInvestigationWorkspace(meta, repo, cache);
+  readOnlyModuleCache(abandoned.path);
   writeFileSync(`${abandoned.path}.owner`, "2147483647");
   const gitdir = readFileSync(join(abandoned.path, ".git"), "utf8").replace(/^gitdir: /, "").trim();
   rmSync(gitdir, { recursive: true, force: true });
