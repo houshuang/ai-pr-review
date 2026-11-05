@@ -12,6 +12,7 @@ import { resolve, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { html as diff2htmlHtml, parse as diff2htmlParse } from "diff2html";
 import { blockLayout } from "./diff.js";
+import { allocateFragments, fragmentLineLabel } from "./file-fragments.js";
 import { syncSideBySideRows, observeSideBySideRows } from "./diff-rows.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -115,17 +116,19 @@ function renderHeader(meta, wt, reviews) {
 }
 
 // Same logic as state.js getEstimatedReadTime
-function getEstimatedReadTime(section, parsedFiles) {
+function getEstimatedReadTime(section, parsedFiles, fragments) {
   let wordCount = 0;
   let codeLines = 0;
   if (section.narrative) wordCount += section.narrative.split(/\s+/).length;
   for (const c of section.callouts || []) {
     if (c.text) wordCount += c.text.split(/\s+/).length;
   }
+  const counted = new Set();
   for (const hunk of section.hunks || []) {
     const file = parsedFiles[hunk.file];
-    if (file) {
-      for (const block of file.blocks || []) {
+    if (file && !counted.has(file)) {
+      counted.add(file);
+      for (const block of fragments?.get(file)?.get(section.id)?.blocks || file.blocks || []) {
         codeLines += block.lines?.length || 0;
       }
     }
@@ -136,7 +139,7 @@ function getEstimatedReadTime(section, parsedFiles) {
 }
 
 // Same structure as SidebarLayout.jsx sidebar
-function renderSidebar(meta, wt, parsedFiles) {
+function renderSidebar(meta, wt, parsedFiles, fragments) {
   // Coverage: which files are in walkthrough vs not
   const coveredFiles = new Set();
   for (const s of wt.sections || []) {
@@ -146,7 +149,7 @@ function renderSidebar(meta, wt, parsedFiles) {
 
   // TOC items with read times (same as TOC.jsx)
   const tocItems = (wt.sections || []).map((s, i) => {
-    const readTime = getEstimatedReadTime(s, parsedFiles);
+    const readTime = getEstimatedReadTime(s, parsedFiles, fragments);
     return `<li><a href="#section-${esc(s.id)}"><span class="toc-title">${esc(s.title)}</span><span class="toc-meta">${readTime} min</span></a></li>`;
   }).join("");
 
@@ -247,8 +250,9 @@ function renderAnnotationBlock(hunk) {
   return `<div class="hunk-annotation annotation-${esc(imp)}" data-target-line="${endLine}" data-start-line="${hunk.startLine || 0}"><span class="annotation-lines">${lineLabel}</span>${md(hunk.annotation)}</div>`;
 }
 
-function renderHunkGroup(filePath, fileHunks, sectionId, parsedFiles, mode, gitHistory) {
+function renderHunkGroup(filePath, fileHunks, sectionId, parsedFiles, mode, gitHistory, fragments, sectionTitles) {
   const file = parsedFiles[filePath];
+  const fragment = file ? fragments.get(file)?.get(sectionId) : null;
   const importanceOrder = { critical: 0, important: 1, supporting: 2, context: 3 };
   const topImportance = fileHunks.reduce((best, h) => {
     const hImp = h.importance || "important";
@@ -280,14 +284,22 @@ function renderHunkGroup(filePath, fileHunks, sectionId, parsedFiles, mode, gitH
   // Render diff (without annotations — those are injected client-side)
   let diffHtml = "";
   if (file) {
-    const filteredFile = filterFileToRanges(file, fileHunks);
+    const filteredFile = fragment ? fragment.file : filterFileToRanges(file, fileHunks);
     diffHtml = renderDiffHtml(filteredFile, mode);
   } else {
     diffHtml = `<div class="no-diff">File &quot;${esc(filePath)}&quot; not found in diff</div>`;
   }
 
   // Render annotations as fallback blocks (client JS will move them inline)
-  const annotationHunks = fileHunks.filter((h) => h.annotation);
+  const annotationHunks = (fragment ? fragment.placed : fileHunks).filter((h) => h.annotation);
+  const sectionLink = (id) => `<a href="#section-${esc(id)}">${esc(sectionTitles.get(id) || id)}</a>`;
+  const noticeHtml = fragment?.blocks.length && fragment.others.length
+    ? `<div class="diff-filter-notice">Showing ${esc(fragmentLineLabel(fragment))} &middot; Rest in ${fragment.others.map(sectionLink).join(", ")}</div>`
+    : "";
+  const elsewhereHtml = (fragment?.elsewhere || [])
+    .filter(({ hunk }) => hunk.annotation)
+    .map(({ hunk, sectionId: shownIn }) => `${renderAnnotationBlock(hunk)}${shownIn ? `<div class="annotation-shown-in">Code in ${sectionLink(shownIn)}</div>` : ""}`)
+    .join("");
   const annotationsHtml = annotationHunks.length > 0
     ? `<div class="hunk-annotations">${annotationHunks.map((h) => renderAnnotationBlock(h)).join("")}</div>`
     : "";
@@ -302,12 +314,14 @@ function renderHunkGroup(filePath, fileHunks, sectionId, parsedFiles, mode, gitH
         ${churnBadgeHtml}
         <span class="hunk-importance importance-badge-${esc(topImportance)}">${esc(topImportance)}</span>
       </div>
-      <div class="hunk-diff">${diffHtml}</div>
+      ${elsewhereHtml}
+      ${noticeHtml}
+      ${diffHtml ? `<div class="hunk-diff">${diffHtml}</div>` : ""}
       ${annotationsHtml}
     </div>`;
 }
 
-function renderSection(section, index, parsedFiles, mode, gitHistory) {
+function renderSection(section, index, parsedFiles, mode, gitHistory, fragments, sectionTitles) {
   const fileCount = new Set(section.hunks?.map((h) => h.file) || []).size;
 
   const fileGroups = new Map();
@@ -346,7 +360,7 @@ function renderSection(section, index, parsedFiles, mode, gitHistory) {
   if (section.hunks?.length) {
     html += `<div class="hunks">`;
     for (const [filePath, fileHunks] of fileGroups.entries()) {
-      html += renderHunkGroup(filePath, fileHunks, section.id, parsedFiles, mode, gitHistory);
+      html += renderHunkGroup(filePath, fileHunks, section.id, parsedFiles, mode, gitHistory, fragments, sectionTitles);
     }
     html += `</div>`;
   }
@@ -918,20 +932,22 @@ async function main() {
 
   // Build body content
   const sections = wt.sections || [];
+  const fragments = allocateFragments(sections, (path) => parsedFiles[path]);
+  const sectionTitles = new Map(sections.map((section) => [section.id, section.title]));
   const explanations = await savedExplanations(resolve(__dirname, ".."), data);
   const mainContent = [
     renderHeader(meta, wt, reviews),
     renderReviewsSummary(reviews),
     renderCommitTimeline(gitHistory),
     renderOverview(wt),
-    ...sections.map((s, i) => renderSection(s, i, parsedFiles, mode, gitHistory)),
+    ...sections.map((s, i) => renderSection(s, i, parsedFiles, mode, gitHistory, fragments, sectionTitles)),
     renderRemainingChanges(parsedFiles, wt, mode),
     ...explanations.map(explanation => `<section class="review-section"><h2>${esc(explanation.title)}</h2><p>${esc(explanation.provenance)}</p><div class="narrative">${md(explanation.markdown)}</div><ul>${explanation.references.map(ref => `<li>${esc(ref.path)}:${ref.line} · ${esc(ref.revision)}</li>`).join("")}</ul></section>`),
     renderFileMap(wt),
     renderFooter(meta),
   ].join("\n");
 
-  const sidebarHtml = renderSidebar(meta, wt, parsedFiles);
+  const sidebarHtml = renderSidebar(meta, wt, parsedFiles, fragments);
   const title = esc(wt.title || "PR Walkthrough");
 
   const html = `<!DOCTYPE html>

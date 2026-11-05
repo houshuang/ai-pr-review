@@ -2,8 +2,8 @@ import { h } from "preact";
 import { getCommentThreads } from "../api";
 import { md, timeAgo } from "../utils";
 
-export function FileComments({ filePath }) {
-  const threads = getCommentThreads(filePath);
+export function FileComments({ filePath, showsLine }) {
+  const threads = getCommentThreads(filePath).filter((thread) => !showsLine || showsLine(thread.line));
   if (!threads.length) return null;
 
   return (

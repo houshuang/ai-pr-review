@@ -1117,6 +1117,14 @@ html.dark .mermaid-zoom-canvas {
   border-bottom: 1px solid var(--border-light);
 }
 
+.annotation-shown-in {
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--ink-faint);
+}
+
+.annotation-shown-in .btn-link,
 .diff-filter-notice .btn-link {
   background: none;
   border: none;

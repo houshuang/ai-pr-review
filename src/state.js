@@ -1,4 +1,5 @@
 import { signal, computed, effect } from "@preact/signals";
+import { allocateFragments } from "./file-fragments";
 
 // ─── Core State (signals) ────────────────────────────
 export const data = signal(null);
@@ -136,6 +137,19 @@ export function findFile(path) {
   return null;
 }
 
+const fragmentAllocation = computed(() => allocateFragments(data.value?.walkthrough?.sections, findFile));
+
+export function getFragment(file, sectionId) {
+  return fragmentAllocation.value.get(file)?.get(sectionId) || null;
+}
+
+export function goToSection(sectionId) {
+  const next = new Set(collapsedSections.value);
+  next.delete(sectionId);
+  collapsedSections.value = next;
+  setTimeout(() => document.getElementById(`section-${sectionId}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+}
+
 export function getFileCoverage(wt) {
   const pf = parsedFiles.value;
   const allFiles = Object.keys(pf);
@@ -208,10 +222,12 @@ export function getEstimatedReadTime(section) {
   for (const c of section.callouts || []) {
     if (c.text) wordCount += c.text.split(/\s+/).length;
   }
+  const counted = new Set();
   for (const hunk of section.hunks || []) {
     const file = findFile(hunk.file);
-    if (file) {
-      for (const block of file.blocks || []) {
+    if (file && !counted.has(file)) {
+      counted.add(file);
+      for (const block of getFragment(file, section.id)?.blocks || file.blocks || []) {
         codeLines += block.lines?.length || 0;
       }
     }
@@ -227,7 +243,11 @@ export function getCommentCountForSection(section) {
   if (!d?.comments?.length || !section.hunks?.length) return 0;
   const sectionFiles = new Set(section.hunks.map((h) => h.file));
   return d.comments.filter((c) =>
-    [...sectionFiles].some((f) => f === c.path || f.endsWith(c.path) || c.path.endsWith(f))
+    [...sectionFiles].some((f) => {
+      if (!(f === c.path || f.endsWith(c.path) || c.path.endsWith(f))) return false;
+      const fragment = getFragment(findFile(f), section.id);
+      return !fragment || fragment.showsLine(c.line);
+    })
   ).length;
 }
 

@@ -3,14 +3,26 @@ import { h } from "preact";
 import { useCallback } from "preact/hooks";
 import {
   data, reviewState, diffViewMode, collapsedHunks, showFullFile, showComments,
-  findFile, isGitHubPR, setReviewed, toggleSet, saveReviewState,
+  findFile, getFragment, goToSection, isGitHubPR, setReviewed, toggleSet, saveReviewState,
   hideReviewed,
 } from "../state";
 import { filterFileToRanges } from "../diff";
-import { esc } from "../utils";
+import { fragmentLineLabel } from "../file-fragments";
+import { linkFileRefs, md } from "../utils";
 import { DiffView } from "./DiffView";
 import { FileComments } from "./FileComments";
 import { CommentComposer } from "./CommentComposer";
+
+function SectionLink({ sectionId }) {
+  const title = data.value?.walkthrough?.sections?.find((section) => section.id === sectionId)?.title || sectionId;
+  return <button className="btn-link" onClick={() => goToSection(sectionId)}>{title}</button>;
+}
+
+function SectionLinks({ sectionIds }) {
+  return sectionIds.map((sectionId, index) => (
+    <>{index > 0 && ", "}<SectionLink key={sectionId} sectionId={sectionId} /></>
+  ));
+}
 
 export function HunkGroup({ filePath, fileHunks, sectionId }) {
   const rs = reviewState.value;
@@ -60,9 +72,12 @@ export function HunkGroup({ filePath, fileHunks, sectionId }) {
   }, [hunkKey]);
 
   const isFull = fullFile.has(hunkKey);
-  const filteredFile = file ? filterFileToRanges(file, fileHunks) : null;
-  const canFilter = file && filteredFile && filteredFile.blocks.length < file.blocks.length;
+  const fragment = file ? getFragment(file, sectionId) : null;
+  const inFragment = fragment && !isFull;
+  const filteredFile = file ? (fragment ? fragment.file : filterFileToRanges(file, fileHunks)) : null;
+  const canFilter = !fragment && file && filteredFile && filteredFile.blocks.length < file.blocks.length;
   const displayFile = file ? (isFull ? file : filteredFile) : null;
+  const hasDiff = displayFile && !(inFragment && fragment.blocks.length === 0);
 
   let ageBadge = null;
   if (age) {
@@ -99,7 +114,22 @@ export function HunkGroup({ filePath, fileHunks, sectionId }) {
 
       {!isCollapsed && (
         <>
-          {displayFile ? (
+          {inFragment && fragment.elsewhere.map(({ hunk, sectionId: shownIn }) => (
+            <div className={`hunk-annotation-inline annotation-${hunk.importance || "important"}`} key={`${hunk.startLine}-${hunk.endLine}`}>
+              <span className="annotation-lines">{hunk.startLine === hunk.endLine ? `L${hunk.startLine}` : `L${hunk.startLine}\u2013${hunk.endLine}`}</span>
+              <span dangerouslySetInnerHTML={{ __html: linkFileRefs(md(hunk.annotation || "")) }} />
+              {shownIn && <div className="annotation-shown-in">Code in <SectionLink sectionId={shownIn} /></div>}
+            </div>
+          ))}
+          {fragment && (
+            <div className="diff-filter-notice">
+              {isFull && <>Showing the whole file &middot; </>}
+              {inFragment && hasDiff && <>Showing {fragmentLineLabel(fragment)} &middot; </>}
+              {inFragment && hasDiff && fragment.others.length > 0 && <>Rest in <SectionLinks sectionIds={fragment.others} /> &middot; </>}
+              <button className="btn-link" data-show-full={hunkKey} onClick={handleShowFull}>{isFull ? "Show only this part" : "Show whole file"}</button>
+            </div>
+          )}
+          {hasDiff ? (
             <div className="hunk-diff" data-hunk-file={filePath} data-hunk-key={hunkKey}>
               {canFilter && !isFull && (
                 <div className="diff-filter-notice">
@@ -113,13 +143,13 @@ export function HunkGroup({ filePath, fileHunks, sectionId }) {
                   <button className="btn-link" data-show-full={hunkKey} onClick={handleShowFull}>Show only referenced hunks</button>
                 </div>
               )}
-              <DiffView file={displayFile} mode={mode} filePath={filePath} hunkKey={hunkKey} fileHunks={fileHunks} showExpandBars={true} />
+              <DiffView file={displayFile} mode={mode} filePath={filePath} hunkKey={hunkKey} fileHunks={inFragment ? fragment.placed : fileHunks} showExpandBars={!inFragment} />
             </div>
-          ) : (
+          ) : !file ? (
             <div className="hunk-diff no-diff">File &quot;{filePath}&quot; not found in diff</div>
-          )}
+          ) : null}
 
-          {comments && <FileComments filePath={filePath} />}
+          {comments && <FileComments filePath={filePath} showsLine={fragment?.showsLine} />}
           {isGitHubPR() && comments && <CommentComposer filePath={filePath} />}
         </>
       )}
