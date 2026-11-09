@@ -403,7 +403,10 @@ head/base revisions, scope, prompt version and explanation model settings.
 Background results from an older walkthrough never attach to its replacement.
 
 Descriptions live under `.cache/explanations/`. Repository snapshots live under
-`.cache/repos/`. For patch files, reconstruction uses the invoking repository's
+`.cache/repos/`. Each snapshot is a full checkout, so one that no review, chat or
+source preview has used for three days is deleted in the background. Its commit
+stays in the cache and the checkout is recreated without a download when a review
+returns to it. For patch files, reconstruction uses the invoking repository's
 committed HEAD with the supplied patch and discloses that the original base is
 unknown. A patch that cannot be reconstructed blocks the deep dive.
 

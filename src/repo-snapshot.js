@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, realpathSync, readdirSync, readFileSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, existsSync, realpathSync, readdirSync, readFileSync, writeFileSync, unlinkSync, rmSync, renameSync, statSync, utimesSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,28 @@ import { acquireFileLock } from "./review-storage.js";
 const defaultCache = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".cache", "repos");
 const options = { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 50 * 1024 * 1024, timeout: 120000 };
 const git = (args, cwd) => execFileSync("git", args, { ...options, cwd }).trim();
+
+export const SNAPSHOT_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * Removes the checkouts no review has used for three days; each is a full copy
+ * of the repository. Their commits stay in the object store, so a review that
+ * returns to one gets it back without downloading the tree again. Deleting
+ * tens of thousands of files runs detached so it never delays a review.
+ */
+function pruneSnapshots(root, objects, keep) {
+  const discarded = readdirSync(root).filter((name) => name.startsWith(".pruned-")).map((name) => resolve(root, name));
+  for (const name of readdirSync(root).filter((name) => /^[a-f0-9]{40,64}$/.test(name) && name !== keep)) {
+    const path = resolve(root, name);
+    if (Date.now() - statSync(path).mtimeMs < SNAPSHOT_MAX_AGE_MS) continue;
+    const trash = resolve(root, `.pruned-${randomUUID()}`);
+    renameSync(path, trash);
+    discarded.push(trash);
+  }
+  if (!discarded.length) return;
+  git(["worktree", "prune"], objects);
+  spawn("rm", ["-rf", ...discarded], { detached: true, stdio: "ignore" }).unref();
+}
 
 export function safeRepoPath(repoPath, userPath) {
   const root = realpathSync(repoPath);
@@ -37,16 +59,24 @@ export async function ensureRepoSnapshot(meta, invokingPath, cacheDir = defaultC
       git(["remote", "add", "origin", remote], objects);
     }
     if (!existsSync(snapshot)) {
-      // A fetch tells the server only about commits that refs name. Without a ref per snapshot it downloads the whole tree every time.
-      const named = new Set(git(["for-each-ref", "--format=%(refname:lstrip=2)", "refs/snapshots"], objects).split("\n"));
-      for (const earlier of readdirSync(root).filter((name) => /^[a-f0-9]{40,64}$/.test(name) && !named.has(name))) {
-        try { git(["update-ref", `refs/snapshots/${earlier}`, earlier], objects); } catch { /* A directory that is not a fetched commit has nothing to offer. */ }
+      const refs = git(["for-each-ref", "--format=%(refname:lstrip=2)", "refs/snapshots"], objects).split("\n");
+      // A pruned snapshot left its commit behind under its ref; only a new revision needs the network.
+      if (!refs.includes(meta.headSha.toLowerCase())) {
+        // A fetch tells the server only about commits that refs name. Without a ref per snapshot it downloads the whole tree every time.
+        for (const earlier of readdirSync(root).filter((name) => /^[a-f0-9]{40,64}$/.test(name) && !refs.includes(name))) {
+          try { git(["update-ref", `refs/snapshots/${earlier}`, earlier], objects); } catch { /* A directory that is not a fetched commit has nothing to offer. */ }
+        }
+        // Fetch the recorded object, never the current PR ref: a later push must not change evidence.
+        git(["fetch", "--depth", "1", remote, meta.headSha], objects);
+        if (git(["rev-parse", "FETCH_HEAD"], objects).toLowerCase() !== meta.headSha.toLowerCase()) throw new Error("Fetched snapshot does not match review SHA");
       }
-      // Fetch the recorded object, never the current PR ref: a later push must not change evidence.
-      git(["fetch", "--depth", "1", remote, meta.headSha], objects);
-      if (git(["rev-parse", "FETCH_HEAD"], objects).toLowerCase() !== meta.headSha.toLowerCase()) throw new Error("Fetched snapshot does not match review SHA");
       git(["worktree", "add", "--detach", snapshot, meta.headSha], objects);
+      git(["update-ref", `refs/snapshots/${meta.headSha.toLowerCase()}`, meta.headSha], objects);
     }
+    // The modification time records the last use, which is what pruning goes by.
+    utimesSync(snapshot, new Date(), new Date());
+    try { pruneSnapshots(root, objects, meta.headSha.toLowerCase()); }
+    catch (error) { console.error(`Could not prune old repository snapshots: ${error.message}`); }
     if (git(["rev-parse", "HEAD"], snapshot).toLowerCase() !== meta.headSha.toLowerCase() || git(["status", "--porcelain"], snapshot)) throw new Error("Cached repository snapshot was modified");
     return { path: snapshot, provenance: `committed snapshot ${meta.headSha}` };
   } finally { await release(); }

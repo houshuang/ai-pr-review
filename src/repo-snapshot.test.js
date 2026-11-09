@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync, mkdirSync, realpathSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync, mkdirSync, realpathSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { ensureRepoSnapshot, safeRepoPath } from "./repo-snapshot.js";
+import { ensureRepoSnapshot, safeRepoPath, SNAPSHOT_MAX_AGE_MS } from "./repo-snapshot.js";
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "review-snapshot-"));
@@ -45,7 +45,31 @@ test("each snapshot is named by a ref, so a later fetch can tell the server what
   await ensureRepoSnapshot({ ...meta, headSha: newSha }, repo, cache, { remoteUrl: repo });
   const objects = join(cache, "fixture/repo/objects.git");
   const refs = execFileSync("git", ["for-each-ref", "--format=%(refname) %(objectname)", "refs/snapshots"], { cwd: objects, encoding: "utf8" });
-  assert.equal(refs.trim(), `refs/snapshots/${oldSha} ${oldSha}`);
+  assert.equal(refs.trim(), [oldSha, newSha].sort().map((sha) => `refs/snapshots/${sha} ${sha}`).join("\n"));
+});
+
+test("a snapshot unused for three days is removed and comes back when a review returns to it", async (t) => {
+  const { repo, oldSha, newSha, cache } = fixture(t);
+  const meta = { owner: "fixture", repo: "repo", number: 3, headSha: oldSha };
+  const old = await ensureRepoSnapshot(meta, repo, cache, { remoteUrl: repo });
+  const aged = (days) => new Date(Date.now() - days * SNAPSHOT_MAX_AGE_MS / 3);
+  utimesSync(old.path, aged(2.9), aged(2.9));
+  const newer = await ensureRepoSnapshot({ ...meta, headSha: newSha }, repo, cache, { remoteUrl: repo });
+  assert.equal(existsSync(old.path), true);
+
+  utimesSync(old.path, aged(3.1), aged(3.1));
+  utimesSync(newer.path, aged(3.1), aged(3.1));
+  // Using a snapshot renews it, and pruning never removes the one being asked for.
+  await ensureRepoSnapshot({ ...meta, headSha: newSha }, repo, cache, { remoteUrl: repo });
+  assert.equal(existsSync(old.path), false);
+  assert.equal(existsSync(newer.path), true);
+  const worktrees = execFileSync("git", ["worktree", "list"], { cwd: join(cache, "fixture/repo/objects.git"), encoding: "utf8" });
+  assert.doesNotMatch(worktrees, new RegExp(oldSha));
+
+  // The commit stayed in the cache, so the snapshot returns even when the remote cannot be reached.
+  const restored = await ensureRepoSnapshot(meta, repo, cache, { remoteUrl: join(cache, "unreachable") });
+  assert.equal(restored.path, old.path);
+  assert.equal(readFileSync(join(restored.path, "code.txt"), "utf8"), "reviewed commit\n");
 });
 
 test("local branch investigation excludes uncommitted edits; patch investigation labels weaker provenance", async (t) => {
