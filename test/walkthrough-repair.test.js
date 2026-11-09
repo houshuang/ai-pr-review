@@ -91,29 +91,29 @@ test("one repair request names every problem, with the file's changed ranges", a
   assert.match(prompt, /Unknown hunk file in section value: missing\.js/);
 });
 
-test("citation problems are repaired, and any that survive lose their line link instead of failing", async () => {
+test("citations that point nowhere lose their line link without a model call", async () => {
   const cited = (text) => ({ ...walkthrough(1), overview: text });
-  const checkCitations = async (value) =>
-    value.overview.includes("value.js:99")
-      ? [{ check: "citation", where: "overview", cited: "value.js:99", message: "overview: citation `value.js:99` is past the end of value.js" }]
-      : [];
-  let prompts = [];
-  const repaired = await validateOrRepairWalkthrough(cited("See value.js:99."), diff, {
-    checkCitations,
+  const unlinked = [];
+  const kept = await validateOrRepairWalkthrough(cited("See value.js:99 and value.js:1."), diff, {
+    checkCitations: async () => [{ check: "citation", where: "overview", cited: "value.js:99", message: "overview: citation `value.js:99` is past the end of value.js" }],
+    onUnlink: (citations) => unlinked.push(...citations),
+    runner: async () => assert.fail("a model cannot look citations up"),
+  });
+  assert.equal(kept.overview, "See value.js and value.js:1.");
+  assert.equal(unlinked.length, 1);
+});
+
+test("citations are checked only after a repair has made the hunks sound", async () => {
+  const checked = [];
+  const repaired = await validateOrRepairWalkthrough({ ...walkthrough(100), overview: "See value.js:99." }, diff, {
+    checkCitations: async (value) => { checked.push(value.sections[0].hunks[0].startLine); return []; },
     runner: async (options) => {
-      prompts.push(options.userPrompt);
-      return JSON.stringify(cited("See value.js:1."));
+      assert.doesNotMatch(options.userPrompt, /citation/);
+      return JSON.stringify({ ...walkthrough(1), overview: "See value.js:99." });
     },
   });
-  assert.equal(prompts.length, 1);
-  assert.match(prompts[0], /value\.js:99/);
-  assert.equal(repaired.overview, "See value.js:1.");
-
-  const kept = await validateOrRepairWalkthrough(cited("See value.js:99."), diff, {
-    checkCitations,
-    runner: async () => JSON.stringify(cited("See value.js:99.")),
-  });
-  assert.equal(kept.overview, "See value.js.");
+  assert.deepEqual(checked, [1]);
+  assert.equal(repaired.overview, "See value.js:99.");
 });
 
 test("repair keeps prose and diagrams it was not asked to change, and undoes double escaping", async () => {
@@ -133,15 +133,10 @@ test("repair keeps prose and diagrams it was not asked to change, and undoes dou
     copy.sections[0].hunks[0].endLine = 1;
     return JSON.stringify(copy);
   };
-  const repaired = await validateOrRepairWalkthrough(original, diff, {
-    runner,
-    checkCitations: async (current) => current.sections[0].narrative.includes("`value.js:1`")
-      ? [{ check: "citation", where: "section value narrative", cited: "value.js:1", message: "section value narrative: citation `value.js:1` matches 2 files" }]
-      : [],
-  });
+  const repaired = await validateOrRepairWalkthrough(original, diff, { runner });
   assert.equal(repaired.title, original.title);
   assert.equal(repaired.overview, original.overview);
   assert.equal(repaired.architecture_diagram, original.architecture_diagram);
-  assert.equal(repaired.sections[0].narrative, "See `src/value.js:1`.\n\nThen \"quoted\".");
+  assert.equal(repaired.sections[0].narrative, original.sections[0].narrative);
   assert.equal(repaired.sections[0].hunks[0].startLine, 1);
 });

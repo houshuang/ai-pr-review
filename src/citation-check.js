@@ -27,14 +27,20 @@ export function gitRevisionReader(cwd, revision) {
   };
 }
 
+// Every prose text that can carry a citation, with the files its section shows and a way to rewrite it.
 export function walkthroughTexts(walkthrough) {
-  const texts = [{ where: "overview", text: walkthrough.overview }];
+  const texts = [];
+  const add = (where, owner, field, files = []) => texts.push({ where, text: owner[field], files, set: (value) => { owner[field] = value; } });
+  add("overview", walkthrough, "overview");
   for (const section of walkthrough.sections || []) {
-    texts.push({ where: `section ${section.id} narrative`, text: section.narrative });
-    for (const hunk of section.hunks || []) texts.push({ where: `section ${section.id} annotation for ${hunk.file}`, text: hunk.annotation });
-    for (const callout of section.callouts || []) texts.push({ where: `section ${section.id} callout "${callout.label}"`, text: callout.text });
+    const files = (section.hunks || []).map((hunk) => hunk.file);
+    add(`section ${section.id} narrative`, section, "narrative", files);
+    for (const hunk of section.hunks || []) add(`section ${section.id} annotation for ${hunk.file}`, hunk, "annotation", [hunk.file]);
+    for (const callout of section.callouts || []) add(`section ${section.id} callout "${callout.label}"`, callout, "text", files);
   }
-  (walkthrough.review_tips || []).forEach((tip, index) => texts.push({ where: `review tip ${index + 1}`, text: typeof tip === "string" ? tip : tip.tip }));
+  (walkthrough.review_tips || []).forEach((tip, index) => typeof tip === "string"
+    ? add(`review tip ${index + 1}`, walkthrough.review_tips, index)
+    : add(`review tip ${index + 1}`, tip, "tip"));
   return texts.filter((entry) => typeof entry.text === "string" && entry.text);
 }
 
@@ -76,7 +82,62 @@ export async function citationProblems(walkthrough, { head, base = null }) {
   return problems;
 }
 
-// After repair rounds run out, a citation that still points nowhere loses its line so the viewer does not link it.
+// The files a short or partial path can mean. Among several, one too short to hold the cited line is ruled out, then the files the surrounding text shows are preferred.
+async function candidateFiles(path, line, reader, preferred) {
+  const files = await reader.listFiles();
+  if (files.has(path)) return [path];
+  let candidates = [...files].filter((file) => file.endsWith(`/${path}`));
+  if (candidates.length > 1) {
+    const counts = await Promise.all(candidates.map((file) => reader.lineCount(file)));
+    candidates = candidates.filter((file, index) => counts[index] >= line);
+  }
+  for (const group of preferred) {
+    if (candidates.length < 2) break;
+    const kept = candidates.filter((file) => group.has(file));
+    if (kept.length) candidates = kept;
+  }
+  return candidates;
+}
+
+/**
+ * Rewrites citations the check would reject wherever the tree settles what
+ * they mean: a short or partial path becomes the one file it can name, and a
+ * range that runs past the end of its file stops at the last line. Returns how
+ * many citations changed; anything still wrong is left for the check to report.
+ */
+export async function repairCitations(walkthrough, { head, base = null }, changedPaths = []) {
+  const changed = new Set(changedPaths);
+  let repaired = 0;
+  for (const entry of walkthroughTexts(walkthrough)) {
+    const edits = [];
+    for (const match of entry.text.matchAll(sourceCitation())) {
+      const [cited, baseLabel = "", path, line, end] = match;
+      if (path.startsWith("/") || path.split("/").includes("..")) continue;
+      if (/[:/]/.test(entry.text[match.index - 1] || "")) continue;
+      const reader = baseLabel ? base : head;
+      if (!reader) continue;
+      const first = Number(line), last = Number(end || line);
+      const accepted = resolvePath(path, await reader.listFiles()).path;
+      if (accepted && last <= await reader.lineCount(accepted)) continue;
+      const candidates = await candidateFiles(path, first, reader, [new Set(entry.files), changed]);
+      if (candidates.length !== 1) continue;
+      const count = await reader.lineCount(candidates[0]);
+      if (first > count) continue;
+      const range = cited.slice(baseLabel.length + path.length);
+      const fitted = last <= count ? range : first === count ? `:${line}` : range.replace(/\d+$/, count);
+      const fixed = `${baseLabel}${candidates[0]}${fitted}`;
+      if (fixed !== cited) edits.push({ index: match.index, length: cited.length, fixed });
+    }
+    if (!edits.length) continue;
+    let text = entry.text;
+    for (const edit of edits.reverse()) text = text.slice(0, edit.index) + edit.fixed + text.slice(edit.index + edit.length);
+    entry.set(text);
+    repaired += edits.length;
+  }
+  return repaired;
+}
+
+// A citation that still points nowhere after repair loses its line so the viewer does not link it.
 export function unlinkCitations(walkthrough, problems) {
   const bad = new Set(problems.filter((problem) => problem.check === "citation").map((problem) => problem.cited));
   if (!bad.size) return walkthrough;

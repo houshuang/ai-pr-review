@@ -24,7 +24,7 @@ import { fileURLToPath } from "url";
 import { sanitizeWalkthroughDiagrams } from "./mermaid-sanitize.js";
 import { getTaskConfig } from "./models.js";
 import { writeReviewFile, acquireFileLock, shouldInvestigateTip } from "./review-storage.js";
-import { WALKTHROUGH_SCHEMA, PATCH_SCHEMA, validateWalkthrough, validatePatch } from "./walkthrough-schema.js";
+import { WALKTHROUGH_SCHEMA, PATCH_SCHEMA, validateWalkthrough, validatePatch, problemsText } from "./walkthrough-schema.js";
 import { changedDiffFiles } from "./stale-sections.js";
 import { canReuseCache, canPatchCache, configFingerprint, inputHash, hash } from "./cache-policy.js";
 import { fetchLocalDiff, readDiffFile } from "./local-input.js";
@@ -34,7 +34,7 @@ import { researchRepository } from "./repository-research.js";
 import { TEACHING_INSTRUCTIONS, repositoryContext } from "./repository-explanation.js";
 import { withCodeTools } from "./walkthrough-tools.js";
 import { ensureRepoSnapshot } from "./repo-snapshot.js";
-import { citationProblems, gitRevisionReader } from "./citation-check.js";
+import { citationProblems, repairCitations, gitRevisionReader } from "./citation-check.js";
 import { AGENT_LABEL, formatCodexUsage, resolveAIProvider, runAgent } from "./ai-provider.js";
 import { hasCli } from "./provider-config.js";
 import { looksLikeBranchName, resolveBranchToPR } from "./resolve-branch.js";
@@ -847,13 +847,18 @@ function formatGitHistoryForPrompt(gitHistory) {
   return parts.length > 0 ? "\n" + parts.join("\n") + "\n" : "";
 }
 
-// Citations are checked against the pinned head; a patch without a recorded head has nothing to check against.
+// Citations are settled against the pinned head; a patch without a recorded head has nothing to check against.
 async function citationChecker(prData) {
   if (!prData.headSha) return null;
   try {
     const head = await ensureRepoSnapshot(prData, prData.repositoryPath || null, resolve(__dirname, "..", ".cache", "repos"));
-    const reader = gitRevisionReader(head.path, "HEAD");
-    return (walkthrough) => citationProblems(walkthrough, { head: reader });
+    const readers = { head: gitRevisionReader(head.path, "HEAD") };
+    const changedPaths = parseDiffIntoFiles(prData.diff).map((file) => file.path);
+    return async (walkthrough) => {
+      const repaired = await repairCitations(walkthrough, readers, changedPaths);
+      if (repaired) log("INFO", `Completed ${repaired} citation${repaired === 1 ? "" : "s"} to the file and lines they name at the reviewed head.`);
+      return citationProblems(walkthrough, readers);
+    };
   } catch (error) {
     log("INFO", `Citation check unavailable: ${error.message}`);
     return null;
@@ -1050,6 +1055,7 @@ Generate the walkthrough JSON. Important reminders:
     runner: runAgentWithProgress,
     checkCitations: await citationChecker(prData),
     onClamp: (count) => log("INFO", `Trimmed ${count} hunk range(s) to the changed lines they overlap.`),
+    onUnlink: (citations) => log("INFO", `Removed the line link from ${citations.length} citation${citations.length === 1 ? "" : "s"} that match no file and line at the reviewed head.\n${problemsText(citations)}`),
     onRepair: (error, round) => log("WARN", `Walkthrough validation found ${error.problems.length} problem(s); repair round ${round}.\n${error.message}`),
   });
 

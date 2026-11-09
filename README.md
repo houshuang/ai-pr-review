@@ -358,9 +358,16 @@ check a research claim or follow a caller the research did not cover. Under Code
 runs in the head snapshot with a read-only shell; through the Claude API it gets
 `read_source` and `search_code` tools (at most 30 lookup rounds, prompt-cached).
 
-Invalid generated file or hunk references get one evidence-grounded repair attempt.
+Invalid generated file or hunk references get an evidence-grounded repair by the model.
 The repaired result must pass the same validation; a failed repair preserves the
 previous review.
+
+`file:line` citations in the prose are checked against the reviewed head without a
+model. A short or partial path (`server.ts:1251`) is completed to the one file it can
+name: files too short to hold the cited line are ruled out, then the files the section
+shows and the files in the diff are preferred. A range that runs past the end of its
+file stops at the last line. A citation that still matches no file and line keeps its
+text and loses its link.
 
 If repository research cannot complete, generation can still use the diff. The
 viewer explicitly displays the research failure; it does not claim that generation

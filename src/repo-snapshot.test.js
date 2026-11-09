@@ -38,6 +38,16 @@ test("GitHub snapshots use the recorded SHA even when the invoking checkout is n
   assert.equal(readFileSync(join(repo, "code.txt"), "utf8"), "dirty invoking checkout\n");
 });
 
+test("each snapshot is named by a ref, so a later fetch can tell the server what the cache already holds", async (t) => {
+  const { repo, oldSha, newSha, cache } = fixture(t);
+  const meta = { owner: "fixture", repo: "repo", number: 3, headSha: oldSha };
+  await ensureRepoSnapshot(meta, repo, cache, { remoteUrl: repo });
+  await ensureRepoSnapshot({ ...meta, headSha: newSha }, repo, cache, { remoteUrl: repo });
+  const objects = join(cache, "fixture/repo/objects.git");
+  const refs = execFileSync("git", ["for-each-ref", "--format=%(refname) %(objectname)", "refs/snapshots"], { cwd: objects, encoding: "utf8" });
+  assert.equal(refs.trim(), `refs/snapshots/${oldSha} ${oldSha}`);
+});
+
 test("local branch investigation excludes uncommitted edits; patch investigation labels weaker provenance", async (t) => {
   const { repo, oldSha, cache } = fixture(t);
   const snapshot = await ensureRepoSnapshot({ source: "local", headSha: oldSha }, repo, cache);

@@ -37,6 +37,11 @@ export async function ensureRepoSnapshot(meta, invokingPath, cacheDir = defaultC
       git(["remote", "add", "origin", remote], objects);
     }
     if (!existsSync(snapshot)) {
+      // A fetch tells the server only about commits that refs name. Without a ref per snapshot it downloads the whole tree every time.
+      const named = new Set(git(["for-each-ref", "--format=%(refname:lstrip=2)", "refs/snapshots"], objects).split("\n"));
+      for (const earlier of readdirSync(root).filter((name) => /^[a-f0-9]{40,64}$/.test(name) && !named.has(name))) {
+        try { git(["update-ref", `refs/snapshots/${earlier}`, earlier], objects); } catch { /* A directory that is not a fetched commit has nothing to offer. */ }
+      }
       // Fetch the recorded object, never the current PR ref: a later push must not change evidence.
       git(["fetch", "--depth", "1", remote, meta.headSha], objects);
       if (git(["rev-parse", "FETCH_HEAD"], objects).toLowerCase() !== meta.headSha.toLowerCase()) throw new Error("Fetched snapshot does not match review SHA");
